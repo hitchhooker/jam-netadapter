@@ -1,0 +1,30 @@
+[package]
+name = "jam-netadapter-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "netadapter-worker"
+path = "src/main.rs"
+
+[[bin]]
+name = "netadapter-aggregator"
+path = "src/aggregator.rs"
+
+[dependencies]
+jam-netadapter-common = { path = "../common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+hex = { workspace = true }
+hickory-resolver = { workspace = true }
+clap = { workspace = true }

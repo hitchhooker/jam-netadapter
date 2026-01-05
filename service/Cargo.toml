@@ -1,0 +1,17 @@
+[package]
+name = "jam-netadapter-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jam-netadapter-common = { path = "../common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
