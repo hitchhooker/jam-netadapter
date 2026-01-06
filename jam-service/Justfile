@@ -1,0 +1,41 @@
+# jam-netadapter polkavm service build
+
+set dotenv-load := true
+
+target := "riscv32em-unknown-none-elf"
+out_dir := "target/" + target + "/release"
+
+default:
+    @echo "Commands:"
+    @echo "  just build    - build the polkavm service"
+    @echo "  just check    - check compilation"
+    @echo "  just link     - link to .jam format"
+    @echo "  just clean    - clean build artifacts"
+
+# Build the polkavm service
+build:
+    cargo +nightly build --release
+    @echo "Built {{out_dir}}/libjam_netadapter_pvm.a"
+
+# Check compilation without building
+check:
+    cargo +nightly check
+
+# Link to polkavm .jam format
+link: build
+    polkatool link \
+        --min-stack-size 131072 \
+        --dispatch-table 'refine,accumulate' \
+        {{out_dir}}/netadapter \
+        -o {{out_dir}}/netadapter.jam
+    @echo "Linked {{out_dir}}/netadapter.jam"
+    @ls -la {{out_dir}}/netadapter.jam
+
+# Clean build artifacts
+clean:
+    cargo clean
+
+# Install polkavm toolchain (run once)
+setup:
+    rustup component add rust-src --toolchain nightly
+    cargo install polkatool

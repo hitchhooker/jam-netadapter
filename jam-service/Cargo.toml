@@ -1,0 +1,29 @@
+[package]
+name = "jam-netadapter-pvm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+
+[[bin]]
+name = "netadapter"
+path = "src/main.rs"
+
+[dependencies]
+# polkavm runtime
+polkavm-derive = "0.29"
+
+# no_std compatible crypto
+sha2 = { version = "0.10", default-features = false }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc", "hazmat"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = false
+
+[profile.dev]
+panic = "abort"
