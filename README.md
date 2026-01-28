@@ -1,142 +1,191 @@
 # jam-netadapter
 
-jam network adapter for decentralized dns infrastructure
+decentralized dns and oracle infrastructure for jam chain
 
-## architecture overview
+## architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              JAM Consensus                                  │
+│                           off-chain (auxiliary)                             │
+│  ┌──────────┐  ┌────────────┐  ┌────────────┐  ┌──────────┐  ┌───────────┐ │
+│  │ worker   │  │ aggregator │  │ dns-server │  │ resolver │  │ sla-probe │ │
+│  │ (oracle) │→→│ (threshold)│  │ (geodns)   │  │ (.alt)   │  │ (monitor) │ │
+│  └──────────┘  └─────┬──────┘  └─────┬──────┘  └────┬─────┘  └─────┬─────┘ │
+└──────────────────────┼───────────────┼──────────────┼──────────────┼───────┘
+                       │               │              │              │
+                       ▼               ▼              ▼              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          jam-service (on-chain)                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ state: zones, .alt namespaces, blocklists, dnssec anchors, config   │   │
+│  │ refine: validate signatures, merkle proofs, nullifiers              │   │
+│  │ accumulate: store oracle data, namespaces, sla results, commitments │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
+│  state: oracles | namespaces | sla contracts | privacy commitments          │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-        ┌───────────────────┐           ┌───────────────────┐
-        │   dns-server      │           │   resolver        │
-        │   (authoritative) │           │   (recursive)     │
-        │                   │           │                   │
-        │ serves zones we   │           │ anycast dns like  │
-        │ own with geodns   │           │ 9.9.9.9 + .alt    │
-        └───────────────────┘           └───────────────────┘
 ```
 
 ## components
 
-### common
-protocol types for:
-- oracle requests/responses with ed25519 threshold signatures
-- dns zones with geodns regions (continent/country/asn)
-- .alt namespace domains and registration
-- conflict resolution (serial, nonce, owner signatures)
+### jam-service (on-chain motor)
 
-### worker
-oracle worker that fetches external data and signs responses
+polkavm service that runs on jam chain. handles five work item types:
+
+| type | description |
+|------|-------------|
+| `OracleData` | threshold-signed external data (http, dns, timestamp, feeds) |
+| `StateUpdate` | key-value storage with ownership and signatures |
+| `NamespaceOp` | .alt domain registration, updates, transfers, renewals |
+| `SlaOp` | probe registration, measurements, epoch finalization, slashing |
+| `PrivateOp` | shielded transactions via poseidon commitments and nullifiers |
 
 ```bash
-cargo run --bin netadapter-worker -- --port 3000
+cd jam-service
+just build   # compile to riscv32em
+just link    # create .jam binary (~169kb)
 ```
 
-### aggregator
-collects worker responses, creates threshold-signed work items
-
+deploy to jam testnet:
 ```bash
-cargo run --bin netadapter-aggregator -- --port 3001 --threshold 2 \
-  --workers http://localhost:3000,http://localhost:3002
+jamt create-service target/riscv32em-unknown-none-elf/release/netadapter.jam 1000000
 ```
 
-### dns-server (authoritative)
-geodns server for zones we own. supports:
-- geo-routing by continent/country/asn
-- optimistic updates with jam finality
-- conflict resolution via serial + owner signatures
+### worker (off-chain oracle)
+
+fetches external data and signs with ed25519:
+
+- http responses
+- dns lookups
+- timestamps
+- price feeds
 
 ```bash
-cargo run --bin netadapter-dns -- --dns-port 5353 --api-port 8053 \
-  --geoip-db /usr/local/share/maxmind/GeoLite2-City.mmdb \
-  --asn-db /usr/local/share/maxmind/GeoLite2-ASN.mmdb
+cargo run --bin netadapter-worker -- --port 3000 --key /path/to/key
 ```
 
-### resolver (recursive + .alt)
-anycast recursive resolver that:
-- resolves normal domains via icann root
-- resolves .alt domains from jam state
-- supports doh/dot for encrypted dns
+### aggregator (off-chain coordinator)
+
+collects worker signatures until threshold met, packages work items:
 
 ```bash
-cargo run --bin netadapter-resolver -- --dns-port 53 --doh-port 443 \
+cargo run --bin netadapter-aggregator -- \
+  --port 3001 \
+  --threshold 2 \
+  --workers http://worker1:3000,http://worker2:3000
+```
+
+### dns-server (authoritative geodns)
+
+serves zones with geographic routing via maxmind geoip:
+
+```bash
+cargo run --bin netadapter-dns -- \
+  --dns-port 5353 \
+  --api-port 8053 \
+  --geoip-db /usr/share/maxmind/GeoLite2-City.mmdb
+```
+
+### resolver (recursive + .alt gateway)
+
+anycast recursive resolver with .alt namespace support:
+
+```bash
+cargo run --bin netadapter-resolver -- \
+  --dns-port 53 \
+  --doh-port 443 \
   --anycast-ip 10.x.x.x
 ```
 
-### service
-jam service library with refine/accumulate pattern
+### sla-probe (monitoring node)
 
-## .alt namespace gateway (rfc 8244 compliant)
+distributed monitoring with commit-reveal measurements:
 
-`.alt` is reserved by ietf for alternative namespaces. the resolver acts as
-a **read-only gateway** to external naming protocols - no registration happens here.
-
-supported namespaces (synced from authoritative sources):
-
-```
-*.dot.alt     - polkadot people chain (authoritative)
-*.eth.alt     - ens (ethereum naming service)
-*.hs.alt      - handshake domains
-*.jam.alt     - jam ecosystem (from jam state)
+```bash
+# not yet implemented - needs:
+# - probe registration with stake
+# - periodic measurements of target nodes
+# - commit hash, then reveal after deadline
+# - reputation tracking
 ```
 
-### examples
+## .alt namespace (rfc 8244)
+
+`.alt` is ietf-reserved for alternative namespaces. the resolver acts as
+read-only gateway to external naming protocols:
+
+| namespace | source | registration |
+|-----------|--------|--------------|
+| `*.jam.alt` | jam state | jam service work items |
+| `*.dot.alt` | polkadot people chain | people chain extrinsics |
+| `*.eth.alt` | ens | ens contracts |
+| `*.hs.alt` | handshake | handshake protocol |
+
+examples:
 ```
-rotko.jam.alt           - resolved from jam state
-validator-01.dot.alt    - resolved from polkadot people chain
-myapp.dot.alt           - resolved from polkadot people chain
-vitalik.eth.alt         - resolved from ens
-unstoppable.hs.alt      - resolved from handshake
-```
-
-### registration
-domains are NOT registered through this resolver. each namespace has its own
-authoritative registry:
-
-| namespace | registry | how to register |
-|-----------|----------|-----------------|
-| `.dot.alt` | polkadot people chain | people chain extrinsics |
-| `.eth.alt` | ens | ens app / contracts |
-| `.hs.alt` | handshake | handshake protocol |
-| `.jam.alt` | jam state | jam service |
-
-the resolver syncs state from these sources and provides unified resolution.
-
-### resolution flow
-```
-query: example.com      → recurse to icann root → normal answer
-query: rotko.jam.alt    → lookup in jam state   → decentralized answer
+rotko.jam.alt          → jam state lookup
+validator-01.dot.alt   → people chain lookup
+vitalik.eth.alt        → ens lookup
 ```
 
-## jam state structure
+## sla monitoring
+
+decentralized uptime/latency monitoring with cryptoeconomic guarantees:
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│ jam state (~3mb baseline, ~50kb/day updates)                       │
-├────────────────────────────────────────────────────────────────────┤
-│ alt_namespaces: HashMap<String, AltNamespace>                      │
-│   - "jam" → { domains: [...], admin: pubkey, policy: open }        │
-│   - "eth" → { domains: [...], admin: pubkey, policy: whitelist }   │
-│   - "ibp" → { domains: [...], admin: pubkey, policy: open }        │
-├────────────────────────────────────────────────────────────────────┤
-│ blocklist_root: [u8; 32]  (merkle root, ~1.2mb bloom filter in da) │
-├────────────────────────────────────────────────────────────────────┤
-│ dnssec_anchors: Vec<DnskeyRecord>  (~50kb)                         │
-├────────────────────────────────────────────────────────────────────┤
-│ resolver_config: ResolverConfig  (~1kb)                            │
-└────────────────────────────────────────────────────────────────────┘
+┌────────────┐     ┌────────────┐     ┌────────────┐
+│  probe A   │     │  probe B   │     │  probe C   │
+│  (europe)  │     │  (asia)    │     │  (america) │
+└─────┬──────┘     └─────┬──────┘     └─────┬──────┘
+      │ measure          │ measure          │ measure
+      ▼                  ▼                  ▼
+┌─────────────────────────────────────────────────┐
+│              target node                        │
+└─────────────────────────────────────────────────┘
+      │                  │                  │
+      │ commit hash      │ commit hash      │ commit hash
+      ▼                  ▼                  ▼
+┌─────────────────────────────────────────────────┐
+│           jam-service (epoch N)                 │
+└─────────────────────────────────────────────────┘
+      │                  │                  │
+      │ reveal           │ reveal           │ reveal
+      ▼                  ▼                  ▼
+┌─────────────────────────────────────────────────┐
+│        jam-service (epoch N+1)                  │
+│  → compute consensus (67% threshold)            │
+│  → update node stats                            │
+│  → adjust probe reputations                     │
+│  → check sla contracts                          │
+└─────────────────────────────────────────────────┘
 ```
 
-## geodns region formats
+commit-reveal prevents probes from copying each other's answers.
+geographic diversity ensures global coverage.
+reputation system penalizes dishonest probes.
 
-records can be targeted to specific regions:
+## privacy (zeratul-style)
+
+shielded transactions using poseidon hash commitments:
+
+| concept | description |
+|---------|-------------|
+| note commitment | `poseidon(blinding, amount, asset_id)` - hides value |
+| nullifier | `poseidon(nk, position, commitment)` - prevents double-spend |
+| merkle tree | incremental tree of commitments for inclusion proofs |
+| anchor | historical merkle root (valid for ~10 min window) |
+
+spend flow:
+```
+1. prover has note at position P with nullifier key NK
+2. compute nullifier = poseidon(NK, P, commitment)
+3. generate merkle proof for commitment at P
+4. submit: { nullifier, anchor, proof }
+5. refine: verify nullifier derivation + merkle proof
+6. accumulate: mark nullifier spent, reject if seen before
+```
+
+## geodns regions
+
+records can target specific geographic regions:
 
 | format | example | description |
 |--------|---------|-------------|
@@ -145,60 +194,55 @@ records can be targeted to specific regions:
 | `country:XX` | `country:DE` | iso 3166-1 alpha-2 |
 | `asn:NNNNN` | `asn:13335` | autonomous system number |
 
-## conflict resolution
+## state schema
 
-for distributed participants updating the same zone:
+jam-service storage prefixes:
 
-1. **zone ownership** - each zone has owner pubkey
-2. **serial-based locking** - updates include expected_serial
-3. **nonce replay protection** - prevents duplicate submissions
-4. **jam consensus ordering** - deterministic winner after 3 blocks
-5. **optimistic rollback** - losers rolled back after finalization
+| prefix | contents |
+|--------|----------|
+| `0x00` | config (threshold, worker keys, finality slots) |
+| `0x01` | oracle data by request_id |
+| `0x02` | state entries by key |
+| `0x03` | namespace domains |
+| `0x04` | namespace metadata |
+| `0x10` | sla probes |
+| `0x11` | sla monitored nodes |
+| `0x12` | sla contracts |
+| `0x13` | sla commitments |
+| `0x14` | sla revealed reports |
+| `0x15` | sla epoch results |
+| `0x20` | privacy note commitments |
+| `0x21` | privacy nullifiers |
+| `0x22` | privacy merkle nodes |
+| `0x23` | privacy tree metadata |
+| `0x24` | privacy anchor history |
 
-```
-participant A → optimistic update (serial=1→2) → local dns serves
-participant B → optimistic update (serial=1→2) → conflicts
-                              │
-jam consensus ────────────────▼
-                orders in block (deterministic)
-                              │
-after 3 blocks ───────────────▼
-                finalized, loser rolled back
-```
+## build
 
-## anycast deployment
+```bash
+# off-chain binaries
+cargo build --release
 
-multiple ibp providers run resolver instances advertising same ip:
-
-```
-                    ┌─────────────────┐
-                    │  anycast ip     │
-                    │  10.x.x.x       │
-                    └────────┬────────┘
-                             │ bgp
-         ┌───────────────────┼───────────────────┐
-         ▼                   ▼                   ▼
-   ┌──────────┐        ┌──────────┐        ┌──────────┐
-   │ eu node  │        │ na node  │        │ as node  │
-   └──────────┘        └──────────┘        └──────────┘
+# on-chain service (requires nightly + riscv target)
+cd jam-service
+rustup target add riscv32em-unknown-none-elf
+just link
 ```
 
-users configure `10.x.x.x` as dns, automatically route to nearest node.
+## deploy
 
-## api endpoints
+```bash
+# start local testnet
+polkajam-testnet
 
-### dns-server
-- `GET /` - server info
-- `GET /zones` - list zones
-- `POST /zones` - create zone
-- `POST /zones/update` - update zone (optimistic or finalized)
-- `POST /block` - advance block, trigger finalization
+# create service
+jamt create-service jam-service/target/riscv32em-unknown-none-elf/release/netadapter.jam 1000000
 
-### resolver (gateway)
-- `GET /` - resolver info + stats
-- `GET /alt` - list supported namespaces
-- `GET /alt/{namespace}` - list cached domains in namespace
-- `GET /alt/{namespace}/{domain}` - get domain records
-- dns queries on port 5354 (udp)
+# or download release
+wget https://github.com/hitchhooker/jam-netadapter/releases/download/v0.1.0/netadapter.jam
+jamt create-service netadapter.jam 1000000
+```
 
-note: no registration endpoints - domains are registered at authoritative sources
+## license
+
+mit
