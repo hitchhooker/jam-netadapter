@@ -6,6 +6,7 @@ mod config;
 mod cosmos;
 mod jam;
 mod relay;
+mod tx;
 mod types;
 
 use clap::Parser;

@@ -8,6 +8,7 @@ license.workspace = true
 jam-netadapter-common = { path = "../common" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_bytes = "0.11"
 bincode = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }

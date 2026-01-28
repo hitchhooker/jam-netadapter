@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::cosmos::CosmosClient;
 use crate::jam::JamClient;
+use crate::tx;
 use crate::types::*;
 
 /// relay executor
@@ -308,113 +309,39 @@ impl Executor {
 
     /// build cosmos tx for MsgRecvPacket
     fn build_recv_packet_tx(&self, task: &RelayTask) -> anyhow::Result<Vec<u8>> {
-        // cosmos tx structure (simplified - real impl needs protobuf)
-        // MsgRecvPacket {
-        //   packet: Packet,
-        //   proof_commitment: bytes,
-        //   proof_height: Height,
-        //   signer: string,
-        // }
+        // TODO: derive cosmos address from executor key
+        // for now use placeholder - real impl needs secp256k1 key
+        let signer = format!("cosmos1{}", hex::encode(&self.keypair.verifying_key().to_bytes()[..20]));
 
-        let mut tx = Vec::new();
+        let msg_bytes = tx::build_recv_packet_msg(task, &signer);
+        let tx_bytes = tx::wrap_in_tx_body(tx::type_urls::MSG_RECV_PACKET, &msg_bytes);
 
-        // tx type prefix for MsgRecvPacket
-        tx.extend_from_slice(b"/ibc.core.channel.v1.MsgRecvPacket");
-        tx.push(0); // separator
-
-        // packet
-        encode_packet_for_cosmos(&mut tx, &task.packet);
-
-        // proof
-        tx.extend_from_slice(&(task.proof.len() as u32).to_le_bytes());
-        tx.extend_from_slice(&task.proof);
-
-        // proof height
-        tx.extend_from_slice(&task.proof_height.revision_number.to_le_bytes());
-        tx.extend_from_slice(&task.proof_height.revision_height.to_le_bytes());
-
-        // signer would be derived from executor's cosmos key
-        // for now just placeholder
-        let signer = self.keypair.verifying_key().to_bytes();
-        tx.extend_from_slice(&signer);
-
-        Ok(tx)
+        Ok(tx_bytes)
     }
 
     /// build cosmos tx for MsgAcknowledgement
     fn build_ack_packet_tx(&self, task: &RelayTask) -> anyhow::Result<Vec<u8>> {
-        let mut tx = Vec::new();
+        let signer = format!("cosmos1{}", hex::encode(&self.keypair.verifying_key().to_bytes()[..20]));
 
-        tx.extend_from_slice(b"/ibc.core.channel.v1.MsgAcknowledgement");
-        tx.push(0);
+        // TODO: get acknowledgement from task metadata
+        let ack = b"{}"; // placeholder
 
-        encode_packet_for_cosmos(&mut tx, &task.packet);
+        let msg_bytes = tx::build_ack_packet_msg(task, ack, &signer);
+        let tx_bytes = tx::wrap_in_tx_body(tx::type_urls::MSG_ACKNOWLEDGEMENT, &msg_bytes);
 
-        // acknowledgement would come from task metadata
-        // placeholder empty ack
-        tx.extend_from_slice(&[0u8; 4]);
-
-        tx.extend_from_slice(&(task.proof.len() as u32).to_le_bytes());
-        tx.extend_from_slice(&task.proof);
-
-        tx.extend_from_slice(&task.proof_height.revision_number.to_le_bytes());
-        tx.extend_from_slice(&task.proof_height.revision_height.to_le_bytes());
-
-        let signer = self.keypair.verifying_key().to_bytes();
-        tx.extend_from_slice(&signer);
-
-        Ok(tx)
+        Ok(tx_bytes)
     }
 
     /// build cosmos tx for MsgTimeout
     fn build_timeout_packet_tx(&self, task: &RelayTask) -> anyhow::Result<Vec<u8>> {
-        let mut tx = Vec::new();
+        let signer = format!("cosmos1{}", hex::encode(&self.keypair.verifying_key().to_bytes()[..20]));
 
-        tx.extend_from_slice(b"/ibc.core.channel.v1.MsgTimeout");
-        tx.push(0);
+        // next_sequence_recv comes from querying the counterparty
+        let next_seq = task.packet.sequence;
 
-        encode_packet_for_cosmos(&mut tx, &task.packet);
+        let msg_bytes = tx::build_timeout_packet_msg(task, next_seq, &signer);
+        let tx_bytes = tx::wrap_in_tx_body(tx::type_urls::MSG_TIMEOUT, &msg_bytes);
 
-        tx.extend_from_slice(&(task.proof.len() as u32).to_le_bytes());
-        tx.extend_from_slice(&task.proof);
-
-        tx.extend_from_slice(&task.proof_height.revision_number.to_le_bytes());
-        tx.extend_from_slice(&task.proof_height.revision_height.to_le_bytes());
-
-        // next sequence recv for timeout proofs
-        tx.extend_from_slice(&task.packet.sequence.to_le_bytes());
-
-        let signer = self.keypair.verifying_key().to_bytes();
-        tx.extend_from_slice(&signer);
-
-        Ok(tx)
+        Ok(tx_bytes)
     }
-}
-
-/// encode packet for cosmos tx
-fn encode_packet_for_cosmos(buf: &mut Vec<u8>, packet: &Packet) {
-    buf.extend_from_slice(&packet.sequence.to_le_bytes());
-
-    let src_port = packet.source_port.as_bytes();
-    buf.extend_from_slice(&(src_port.len() as u32).to_le_bytes());
-    buf.extend_from_slice(src_port);
-
-    let src_chan = packet.source_channel.as_bytes();
-    buf.extend_from_slice(&(src_chan.len() as u32).to_le_bytes());
-    buf.extend_from_slice(src_chan);
-
-    let dst_port = packet.destination_port.as_bytes();
-    buf.extend_from_slice(&(dst_port.len() as u32).to_le_bytes());
-    buf.extend_from_slice(dst_port);
-
-    let dst_chan = packet.destination_channel.as_bytes();
-    buf.extend_from_slice(&(dst_chan.len() as u32).to_le_bytes());
-    buf.extend_from_slice(dst_chan);
-
-    buf.extend_from_slice(&(packet.data.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&packet.data);
-
-    buf.extend_from_slice(&packet.timeout_height.revision_number.to_le_bytes());
-    buf.extend_from_slice(&packet.timeout_height.revision_height.to_le_bytes());
-    buf.extend_from_slice(&packet.timeout_timestamp.to_le_bytes());
 }

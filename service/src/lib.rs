@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+pub mod ibc;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItem {
     pub item_type: WorkItemType,

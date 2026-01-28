@@ -41,3 +41,7 @@ clap = { workspace = true }
 # error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+
+# ibc protobuf
+prost = { workspace = true }
+ibc-proto = { workspace = true }
