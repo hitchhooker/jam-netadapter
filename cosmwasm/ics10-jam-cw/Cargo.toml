@@ -1,0 +1,28 @@
+[package]
+name = "ics10-jam-cw"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "CosmWasm ICS-10 JAM Light Client for 08-wasm"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# for quicker tests, cargo test --lib
+library = []
+
+[dependencies]
+cosmwasm-std = "2.0"
+cosmwasm-schema = "2.0"
+cw-storage-plus = "2.0"
+schemars = "0.8"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+thiserror = "1.0"
+blake2 = "0.10"
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+cw-multi-test = "2.0"
