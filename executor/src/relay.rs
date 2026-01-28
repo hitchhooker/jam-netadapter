@@ -5,11 +5,49 @@
 use ed25519_dalek::{Signer, SigningKey};
 use tracing::{info, debug, warn, error};
 use std::time::Duration;
+use std::collections::HashMap;
 
 use crate::cosmos::CosmosClient;
 use crate::jam::JamClient;
 use crate::tx;
 use crate::types::*;
+
+/// chain type for routing
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChainType {
+    /// cosmos sdk chains (cosmoshub, osmosis)
+    Cosmos,
+    /// penumbra (jmt proofs, shielded)
+    Penumbra,
+    /// generic tendermint
+    Tendermint,
+}
+
+impl ChainType {
+    /// detect chain type from chain id
+    pub fn from_chain_id(chain_id: &str) -> Self {
+        if chain_id.starts_with("penumbra") {
+            ChainType::Penumbra
+        } else if chain_id.contains("cosmoshub") || chain_id.contains("osmosis") {
+            ChainType::Cosmos
+        } else {
+            ChainType::Tendermint
+        }
+    }
+
+    /// check if this chain requires timestamp quantization
+    pub fn requires_timestamp_quantization(&self) -> bool {
+        matches!(self, ChainType::Penumbra)
+    }
+
+    /// get quantization interval in nanoseconds
+    pub fn timestamp_quantum_ns(&self) -> u64 {
+        match self {
+            ChainType::Penumbra => 60_000_000_000, // 1 minute
+            _ => 0, // no quantization
+        }
+    }
+}
 
 /// relay executor
 pub struct Executor {
@@ -18,9 +56,44 @@ pub struct Executor {
     pub keypair: SigningKey,
     pub min_bounty: u64,
     pub dry_run: bool,
+    /// additional chain clients for multi-chain routing
+    pub chain_clients: HashMap<String, CosmosClient>,
 }
 
 impl Executor {
+    /// create new executor with single cosmos client
+    pub fn new(
+        jam_client: JamClient,
+        cosmos_client: CosmosClient,
+        keypair: SigningKey,
+        min_bounty: u64,
+        dry_run: bool,
+    ) -> Self {
+        Self {
+            jam_client,
+            cosmos_client,
+            keypair,
+            min_bounty,
+            dry_run,
+            chain_clients: HashMap::new(),
+        }
+    }
+
+    /// add additional chain client for multi-chain routing
+    pub fn add_chain_client(&mut self, chain_id: String, client: CosmosClient) {
+        self.chain_clients.insert(chain_id, client);
+    }
+
+    /// get client for destination chain
+    fn get_dest_client(&self, chain_id: &str) -> &CosmosClient {
+        self.chain_clients.get(chain_id).unwrap_or(&self.cosmos_client)
+    }
+
+    /// detect chain type from destination chain
+    fn detect_chain_type(&self, chain_id: &str) -> ChainType {
+        ChainType::from_chain_id(chain_id)
+    }
+
     /// run main executor loop
     pub async fn run(&self, poll_interval: Duration) -> anyhow::Result<()> {
         info!("executor starting main loop");

@@ -82,13 +82,13 @@ async fn main() -> anyhow::Result<()> {
     let cosmos_client = cosmos::CosmosClient::new(&args.cosmos_rpc).await?;
 
     // create executor
-    let executor = relay::Executor {
+    let executor = relay::Executor::new(
         jam_client,
         cosmos_client,
         keypair,
-        min_bounty: args.min_bounty,
-        dry_run: args.dry_run,
-    };
+        args.min_bounty,
+        args.dry_run,
+    );
 
     // run main loop
     let poll_interval = Duration::from_secs(args.poll_interval);
