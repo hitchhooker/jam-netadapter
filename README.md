@@ -28,7 +28,7 @@ decentralized dns and oracle infrastructure for jam chain
 
 ### jam-service (on-chain motor)
 
-polkavm service that runs on jam chain. handles five work item types:
+polkavm service that runs on jam chain. handles six work item types:
 
 | type | description |
 |------|-------------|
@@ -37,11 +37,12 @@ polkavm service that runs on jam chain. handles five work item types:
 | `NamespaceOp` | .alt domain registration, updates, transfers, renewals |
 | `SlaOp` | probe registration, measurements, epoch finalization, slashing |
 | `PrivateOp` | shielded transactions via poseidon commitments and nullifiers |
+| `IbcOp` | cosmos ibc bridge: light clients, packets, relay task queue |
 
 ```bash
 cd jam-service
 just build   # compile to riscv32em
-just link    # create .jam binary (~169kb)
+just link    # create .jam binary (~218kb)
 ```
 
 deploy to jam testnet:
@@ -183,6 +184,52 @@ spend flow:
 6. accumulate: mark nullifier spent, reject if seen before
 ```
 
+## ibc relay (cosmos bridge)
+
+bridge jam to cosmos chains (osmosis, cosmoshub, etc) via ibc protocol:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         cosmos chain (osmosis)                               │
+│  packets committed → validators sign blocks → iavl merkle proofs            │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ executors observe
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         off-chain executors                                  │
+│  monitor cosmos → build proofs → submit RecvPacket → confirm execution      │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ work items
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         jam-service (ibc module)                             │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ refine: verify tendermint headers, iavl proofs, ed25519 signatures     │ │
+│  │ accumulate: update light clients, store packets, manage relay tasks    │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│  state: clients | connections | channels | packets | relay tasks            │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+ibc work item types:
+
+| operation | description |
+|-----------|-------------|
+| `CreateClient` | register tendermint light client for cosmos chain |
+| `UpdateClient` | submit new header with validator signatures |
+| `SendPacket` | send packet from jam, creates relay task |
+| `RecvPacket` | receive packet from cosmos with merkle proof |
+| `AcknowledgePacket` | confirm packet was received on destination |
+| `ClaimRelayTask` | executor claims pending relay task |
+| `ConfirmExecution` | executor proves tx was included on dest chain |
+
+executor incentives:
+- tasks have bounties (base + proof size + urgency bonus)
+- first-come-first-served claiming
+- deadline for execution (~1 hour)
+- bounty paid on successful confirmation
+- expired tasks re-queued for new executors
+
 ## geodns regions
 
 records can target specific geographic regions:
@@ -216,6 +263,22 @@ jam-service storage prefixes:
 | `0x22` | privacy merkle nodes |
 | `0x23` | privacy tree metadata |
 | `0x24` | privacy anchor history |
+| `0x30` | ibc client states |
+| `0x31` | ibc consensus states |
+| `0x32` | ibc connections |
+| `0x33` | ibc channels |
+| `0x34` | ibc packet commitments |
+| `0x35` | ibc packet receipts |
+| `0x36` | ibc packet acknowledgements |
+| `0x37` | ibc next sequence send |
+| `0x38` | ibc next sequence recv |
+| `0x39` | ibc next sequence ack |
+| `0x3A` | ibc relay tasks |
+| `0x3B` | ibc client counter |
+| `0x3C` | ibc connection counter |
+| `0x3D` | ibc channel counter |
+| `0x3E` | ibc task metrics |
+| `0x3F` | ibc pending task index |
 
 ## build
 
