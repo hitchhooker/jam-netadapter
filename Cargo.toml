@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["common", "worker", "service", "dns-server", "resolver"]
+members = ["common", "worker", "service", "dns-server", "resolver", "executor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,10 +20,14 @@ tokio = { version = "1.43", features = ["full"] }
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-hex = "0.4"
+hex = { version = "0.4", features = ["serde"] }
 serde_with = "3.11"
 hickory-server = "0.25"
 hickory-proto = "0.25"
 hickory-resolver = "0.25"
 clap = { version = "4.5", features = ["derive"] }
 maxminddb = "0.24"
+anyhow = "1"
+toml = "0.8"
+tendermint = "0.40"
+tendermint-rpc = { version = "0.40", features = ["http-client"] }
