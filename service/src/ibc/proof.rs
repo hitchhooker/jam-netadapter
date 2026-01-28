@@ -131,7 +131,7 @@ pub struct LeafOp {
     pub prehash_key: u8,
     /// prehash value function
     pub prehash_value: u8,
-    /// length encoding
+    /// length encoding (0 = none, 1 = varint)
     pub length: u8,
     /// prefix bytes
     pub prefix: Vec<u8>,
@@ -145,16 +145,30 @@ impl LeafOp {
         // add prefix
         hasher.update(&self.prefix);
 
+        // prehash key if needed
+        let key_data = if self.prehash_key == 1 {
+            Sha256::digest(key).to_vec()
+        } else {
+            key.to_vec()
+        };
+
+        // prehash value if needed
+        let value_data = if self.prehash_value == 1 {
+            Sha256::digest(value).to_vec()
+        } else {
+            value.to_vec()
+        };
+
         // add length-prefixed key
         match self.length {
             0 => {
                 // no length prefix
-                hasher.update(key);
+                hasher.update(&key_data);
             }
             1 => {
                 // varint length prefix
-                hasher.update(&encode_varint(key.len() as u64));
-                hasher.update(key);
+                hasher.update(&encode_varint(key_data.len() as u64));
+                hasher.update(&key_data);
             }
             _ => return Err(IbcError::InvalidProof),
         }
@@ -162,11 +176,11 @@ impl LeafOp {
         // add length-prefixed value
         match self.length {
             0 => {
-                hasher.update(value);
+                hasher.update(&value_data);
             }
             1 => {
-                hasher.update(&encode_varint(value.len() as u64));
-                hasher.update(value);
+                hasher.update(&encode_varint(value_data.len() as u64));
+                hasher.update(&value_data);
             }
             _ => return Err(IbcError::InvalidProof),
         }
@@ -195,6 +209,17 @@ impl LeafOp {
             prefix: vec![0],
         }
     }
+
+    /// penumbra jellyfish merkle tree (jmt) leaf spec
+    pub fn jmt() -> Self {
+        Self {
+            hash: 0,          // sha256
+            prehash_key: 1,   // sha256 prehash
+            prehash_value: 1, // sha256 prehash
+            length: 0,        // no length prefix
+            prefix: b"JMT::LeafNode".to_vec(),
+        }
+    }
 }
 
 /// inner operation (non-leaf node)
@@ -216,6 +241,113 @@ impl InnerOp {
         hasher.update(child_hash);
         hasher.update(&self.suffix);
         Ok(hasher.finalize().into())
+    }
+
+    /// cosmos iavl inner spec
+    pub fn iavl() -> InnerSpec {
+        InnerSpec {
+            child_order: vec![0, 1],
+            child_size: 33,
+            min_prefix_length: 4,
+            max_prefix_length: 12,
+            empty_child: vec![],
+            hash: 0,
+        }
+    }
+
+    /// cosmos tendermint inner spec
+    pub fn tendermint() -> InnerSpec {
+        InnerSpec {
+            child_order: vec![0, 1],
+            child_size: 32,
+            min_prefix_length: 1,
+            max_prefix_length: 1,
+            empty_child: vec![],
+            hash: 0,
+        }
+    }
+
+    /// penumbra jmt inner spec
+    pub fn jmt() -> InnerSpec {
+        InnerSpec {
+            child_order: vec![0, 1],
+            child_size: 32,
+            min_prefix_length: 1,
+            max_prefix_length: 1,
+            // jmt sparse merkle placeholder hash
+            empty_child: vec![
+                0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+                0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+            ],
+            hash: 0,
+        }
+    }
+}
+
+/// inner node specification for different tree types
+#[derive(Clone, Debug)]
+pub struct InnerSpec {
+    /// child ordering (left=0, right=1)
+    pub child_order: Vec<u8>,
+    /// size of each child hash
+    pub child_size: u32,
+    /// minimum prefix length before child hash
+    pub min_prefix_length: u32,
+    /// maximum prefix length before child hash
+    pub max_prefix_length: u32,
+    /// placeholder for empty/sparse nodes
+    pub empty_child: Vec<u8>,
+    /// hash function (0 = sha256)
+    pub hash: u8,
+}
+
+/// proof spec combining leaf and inner specs
+#[derive(Clone, Debug)]
+pub struct ProofSpec {
+    pub leaf_spec: LeafOp,
+    pub inner_spec: InnerSpec,
+    /// maximum tree depth
+    pub max_depth: u32,
+    /// minimum tree depth
+    pub min_depth: u32,
+    /// prehash key before leaf op
+    pub prehash_key_before_comparison: bool,
+}
+
+impl ProofSpec {
+    /// cosmos iavl proof spec
+    pub fn iavl() -> Self {
+        Self {
+            leaf_spec: LeafOp::iavl(),
+            inner_spec: InnerOp::iavl(),
+            max_depth: 0,
+            min_depth: 0,
+            prehash_key_before_comparison: false,
+        }
+    }
+
+    /// cosmos tendermint proof spec
+    pub fn tendermint() -> Self {
+        Self {
+            leaf_spec: LeafOp::tendermint(),
+            inner_spec: InnerOp::tendermint(),
+            max_depth: 0,
+            min_depth: 0,
+            prehash_key_before_comparison: false,
+        }
+    }
+
+    /// penumbra jmt proof spec
+    pub fn jmt() -> Self {
+        Self {
+            leaf_spec: LeafOp::jmt(),
+            inner_spec: InnerOp::jmt(),
+            max_depth: 64, // jmt has 256-bit keys with 64 nibbles
+            min_depth: 0,
+            prehash_key_before_comparison: true, // jmt uses key hash for path
+        }
     }
 }
 

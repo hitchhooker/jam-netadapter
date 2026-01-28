@@ -660,3 +660,165 @@ pub fn on_timeout_packet(
     // timeout is equivalent to failed ack
     on_acknowledge_packet(state, packet, false)
 }
+
+// ============================================================================
+// penumbra compatibility
+// ============================================================================
+
+/// timestamp quantization for penumbra privacy
+/// penumbra requires timestamps to be quantized to 1-minute intervals
+/// to prevent timing correlation attacks on shielded transfers
+pub mod privacy {
+    use super::*;
+
+    /// quantization interval in nanoseconds (60 seconds)
+    pub const TIMESTAMP_QUANTUM_NS: u64 = 60_000_000_000;
+
+    /// quantization interval in seconds
+    pub const TIMESTAMP_QUANTUM_SECS: u64 = 60;
+
+    /// quantize timestamp to nearest minute boundary (floor)
+    pub fn quantize_timestamp(timestamp: Timestamp) -> Timestamp {
+        (timestamp / TIMESTAMP_QUANTUM_NS) * TIMESTAMP_QUANTUM_NS
+    }
+
+    /// quantize timestamp to next minute boundary (ceiling)
+    pub fn quantize_timestamp_ceil(timestamp: Timestamp) -> Timestamp {
+        let base = quantize_timestamp(timestamp);
+        if timestamp > base {
+            base + TIMESTAMP_QUANTUM_NS
+        } else {
+            base
+        }
+    }
+
+    /// check if timestamp is properly quantized
+    pub fn is_quantized(timestamp: Timestamp) -> bool {
+        timestamp % TIMESTAMP_QUANTUM_NS == 0
+    }
+
+    /// penumbra-compatible transfer config
+    #[derive(Clone, Debug)]
+    pub struct PenumbraTransferConfig {
+        /// enforce timestamp quantization
+        pub enforce_quantization: bool,
+        /// minimum timeout (quantized)
+        pub min_timeout_ns: u64,
+        /// default timeout delta (quantized)
+        pub default_timeout_delta_ns: u64,
+    }
+
+    impl Default for PenumbraTransferConfig {
+        fn default() -> Self {
+            Self {
+                enforce_quantization: true,
+                // minimum 10 minutes
+                min_timeout_ns: 10 * TIMESTAMP_QUANTUM_NS,
+                // default 1 hour
+                default_timeout_delta_ns: 60 * TIMESTAMP_QUANTUM_NS,
+            }
+        }
+    }
+
+    impl PenumbraTransferConfig {
+        /// calculate quantized timeout for penumbra transfers
+        pub fn calculate_timeout(&self, current_timestamp: Timestamp) -> Timestamp {
+            let raw_timeout = current_timestamp + self.default_timeout_delta_ns;
+            quantize_timestamp_ceil(raw_timeout)
+        }
+
+        /// validate packet timeout for penumbra compatibility
+        pub fn validate_timeout(&self, timeout: Timestamp) -> Result<(), IbcError> {
+            if self.enforce_quantization && !is_quantized(timeout) {
+                return Err(IbcError::InvalidPacketData);
+            }
+            Ok(())
+        }
+    }
+
+    /// penumbra receiver address encoding
+    /// penumbra uses bech32m with specific prefixes
+    pub struct PenumbraReceiver;
+
+    impl PenumbraReceiver {
+        /// penumbra address prefix
+        pub const PREFIX: &'static str = "penumbra";
+
+        /// check if address is a penumbra address
+        pub fn is_penumbra_address(addr: &[u8]) -> bool {
+            // check for penumbra bech32m prefix
+            if addr.len() < 8 {
+                return false;
+            }
+            addr.starts_with(Self::PREFIX.as_bytes())
+        }
+
+        /// validate penumbra receiver address format
+        pub fn validate(addr: &[u8]) -> Result<(), IbcError> {
+            if !Self::is_penumbra_address(addr) {
+                return Err(IbcError::InvalidPacketData);
+            }
+
+            // penumbra addresses are 80 bytes in decoded form
+            // bech32m encoding makes them longer
+            if addr.len() < 50 || addr.len() > 150 {
+                return Err(IbcError::InvalidPacketData);
+            }
+
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_timestamp_quantization() {
+            // exact boundary
+            let t1 = 60_000_000_000u64;
+            assert!(is_quantized(t1));
+            assert_eq!(quantize_timestamp(t1), t1);
+
+            // mid-minute
+            let t2 = 90_000_000_000u64; // 1.5 minutes
+            assert!(!is_quantized(t2));
+            assert_eq!(quantize_timestamp(t2), 60_000_000_000);
+            assert_eq!(quantize_timestamp_ceil(t2), 120_000_000_000);
+
+            // just past boundary
+            let t3 = 60_000_000_001u64;
+            assert!(!is_quantized(t3));
+            assert_eq!(quantize_timestamp_ceil(t3), 120_000_000_000);
+        }
+
+        #[test]
+        fn test_penumbra_timeout() {
+            let config = PenumbraTransferConfig::default();
+
+            let current = 1000_000_000_000u64; // some timestamp
+            let timeout = config.calculate_timeout(current);
+
+            // should be quantized
+            assert!(is_quantized(timeout));
+
+            // should be >= current + default_timeout
+            assert!(timeout >= current + config.default_timeout_delta_ns);
+
+            // validate should pass
+            assert!(config.validate_timeout(timeout).is_ok());
+
+            // non-quantized should fail
+            assert!(config.validate_timeout(timeout + 1).is_err());
+        }
+
+        #[test]
+        fn test_penumbra_address_detection() {
+            let valid = b"penumbra1abc123...";
+            assert!(PenumbraReceiver::is_penumbra_address(valid));
+
+            let invalid = b"cosmos1abc123";
+            assert!(!PenumbraReceiver::is_penumbra_address(invalid));
+        }
+    }
+}
