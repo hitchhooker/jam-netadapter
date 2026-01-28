@@ -230,6 +230,34 @@ executor incentives:
 - bounty paid on successful confirmation
 - expired tasks re-queued for new executors
 
+### executor (off-chain relay runner)
+
+runs as off-chain daemon to relay ibc packets:
+
+```bash
+# with config file
+cargo run --bin jam-ibc-executor -- -c executor.toml
+
+# with cli args
+cargo run --bin jam-ibc-executor -- \
+  --jam-rpc http://localhost:9933 \
+  --cosmos-rpc https://rpc.osmosis.zone \
+  --keypair /path/to/ed25519.key \
+  --min-bounty 500 \
+  --poll-interval 6
+
+# dry run (no transactions)
+cargo run --bin jam-ibc-executor -- --dry-run
+```
+
+executor workflow:
+1. monitors cosmos chain for `send_packet` events
+2. fetches merkle proofs for packet commitments
+3. submits `RecvPacket` work items to jam
+4. claims pending relay tasks with bounties above minimum
+5. executes relays on destination chains
+6. confirms execution with inclusion proofs
+
 ## geodns regions
 
 records can target specific geographic regions:

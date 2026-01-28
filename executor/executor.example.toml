@@ -1,0 +1,28 @@
+# jam ibc executor configuration
+
+[jam]
+rpc_url = "http://localhost:9933"
+service_id = 0
+
+[[cosmos_chains]]
+chain_id = "osmosis-1"
+rpc_url = "https://rpc.osmosis.zone"
+grpc_url = "https://grpc.osmosis.zone"
+client_id = "07-tendermint-0"
+ports = ["transfer"]
+channels = ["channel-0"]
+
+[[cosmos_chains]]
+chain_id = "cosmoshub-4"
+rpc_url = "https://rpc.cosmos.network"
+grpc_url = "https://grpc.cosmos.network"
+client_id = "07-tendermint-1"
+ports = ["transfer"]
+channels = ["channel-1"]
+
+[executor]
+min_bounty = 500
+max_gas = 1000000
+poll_interval_secs = 6
+max_retries = 3
+rpc_timeout_secs = 30
