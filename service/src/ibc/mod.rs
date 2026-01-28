@@ -10,6 +10,7 @@ pub mod proof;
 pub mod tendermint;
 pub mod relay;
 pub mod transfer;
+pub mod storage;
 
 #[cfg(test)]
 mod tests;

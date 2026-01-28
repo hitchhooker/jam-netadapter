@@ -4,6 +4,9 @@
 mod tests {
     use super::super::*;
     use super::super::transfer::*;
+    use super::super::connection::*;
+    use super::super::channel::*;
+    use super::super::storage::*;
 
     #[test]
     fn test_height_comparison() {
@@ -516,5 +519,348 @@ mod tests {
 
         // supply reduced by burn
         assert_eq!(state.registry.get_supply(&token_id), 600);
+    }
+
+    // =========================================================================
+    // connection handshake tests
+    // =========================================================================
+
+    #[test]
+    fn test_connection_init() {
+        let msg = ConnectionMsg::Init {
+            client_id: ClientId::new("07-tendermint-0"),
+            counterparty_client_id: ClientId::new("07-tendermint-1"),
+            counterparty_prefix: b"ibc".to_vec(),
+            versions: vec![default_ibc_version()],
+            delay_period: 0,
+        };
+
+        let (conn_id, conn) = process_init(&msg, 0).unwrap();
+
+        assert_eq!(conn_id.0, b"connection-0");
+        assert_eq!(conn.state, ConnectionState::Init);
+        assert!(!conn.is_open());
+    }
+
+    #[test]
+    fn test_connection_open_flow() {
+        // init
+        let init_msg = ConnectionMsg::Init {
+            client_id: ClientId::new("07-tendermint-0"),
+            counterparty_client_id: ClientId::new("07-tendermint-1"),
+            counterparty_prefix: b"ibc".to_vec(),
+            versions: vec![default_ibc_version()],
+            delay_period: 0,
+        };
+
+        let (conn_id, mut conn) = process_init(&init_msg, 0).unwrap();
+        assert_eq!(conn.state, ConnectionState::Init);
+
+        // ack (skipping try_open as we're the initiator)
+        let ack_msg = ConnectionMsg::Ack {
+            connection_id: conn_id.clone(),
+            counterparty_connection_id: ConnectionId::new("connection-0"),
+            version: default_ibc_version(),
+            proof_try: vec![1, 2, 3],
+            proof_height: Height::new(0, 100),
+        };
+
+        process_ack(&mut conn, &ack_msg).unwrap();
+        assert!(conn.is_open());
+    }
+
+    // =========================================================================
+    // channel handshake tests
+    // =========================================================================
+
+    #[test]
+    fn test_channel_init() {
+        let msg = ChannelMsg::Init {
+            port_id: PortId::new("transfer"),
+            ordering: Order::Unordered,
+            counterparty_port: PortId::new("transfer"),
+            connection_id: ConnectionId::new("connection-0"),
+            version: b"ics20-1".to_vec(),
+        };
+
+        let (channel_id, channel) = process_channel_init(&msg, 0).unwrap();
+
+        assert_eq!(channel_id.0, b"channel-0");
+        assert_eq!(channel.state, ChannelState::Init);
+        assert_eq!(channel.ordering, Order::Unordered);
+    }
+
+    #[test]
+    fn test_channel_open_flow() {
+        // init
+        let init_msg = ChannelMsg::Init {
+            port_id: PortId::new("transfer"),
+            ordering: Order::Unordered,
+            counterparty_port: PortId::new("transfer"),
+            connection_id: ConnectionId::new("connection-0"),
+            version: b"ics20-1".to_vec(),
+        };
+
+        let (channel_id, mut channel) = process_channel_init(&init_msg, 0).unwrap();
+        assert_eq!(channel.state, ChannelState::Init);
+
+        // ack
+        let ack_msg = ChannelMsg::Ack {
+            port_id: PortId::new("transfer"),
+            channel_id: channel_id.clone(),
+            counterparty_channel: ChannelId::new("channel-0"),
+            counterparty_version: b"ics20-1".to_vec(),
+            proof_try: vec![1, 2, 3],
+            proof_height: Height::new(0, 100),
+        };
+
+        process_channel_ack(&mut channel, &ack_msg).unwrap();
+        assert!(channel.is_open());
+    }
+
+    #[test]
+    fn test_channel_close() {
+        let mut channel = ChannelEnd::new_init(
+            Order::Unordered,
+            PortId::new("transfer"),
+            vec![ConnectionId::new("connection-0")],
+            b"ics20-1".to_vec(),
+        );
+
+        // open the channel first
+        channel.open().unwrap();
+        assert!(channel.is_open());
+
+        // close
+        channel.close().unwrap();
+        assert!(channel.is_closed());
+
+        // can't close again
+        assert!(channel.close().is_err());
+    }
+
+    #[test]
+    fn test_sequence_state() {
+        let mut seq = SequenceState::new();
+
+        assert_eq!(seq.alloc_send(), 1);
+        assert_eq!(seq.alloc_send(), 2);
+        assert_eq!(seq.next_send, 3);
+
+        assert!(seq.advance_recv(1).is_ok());
+        assert!(seq.advance_recv(2).is_ok());
+        assert!(seq.advance_recv(4).is_err()); // skip not allowed
+    }
+
+    // =========================================================================
+    // storage tests
+    // =========================================================================
+
+    #[test]
+    fn test_in_memory_storage_clients() {
+        let mut storage = InMemoryIbcStorage::new();
+
+        let client_id = storage.alloc_client_id();
+        assert_eq!(client_id.0, b"07-tendermint-0");
+
+        let client_state = ClientState {
+            chain_id: ChainId::new("osmosis-1"),
+            trust_level: (1, 3),
+            trusting_period: 1209600,
+            unbonding_period: 1814400,
+            max_clock_drift: 10,
+            latest_height: Height::new(0, 100),
+            frozen_height: None,
+        };
+
+        storage.set_client_state(&client_id, client_state.clone());
+        let retrieved = storage.get_client_state(&client_id).unwrap();
+        assert_eq!(retrieved.chain_id, client_state.chain_id);
+    }
+
+    #[test]
+    fn test_in_memory_storage_packets() {
+        let mut storage = InMemoryIbcStorage::new();
+
+        let port = PortId::new("transfer");
+        let channel = ChannelId::new("channel-0");
+
+        // packet commitment
+        let commitment = [42u8; 32];
+        storage.set_packet_commitment(&port, &channel, 1, commitment);
+        assert_eq!(storage.get_packet_commitment(&port, &channel, 1), Some(&commitment));
+
+        // packet receipt
+        assert!(!storage.has_packet_receipt(&port, &channel, 1));
+        storage.set_packet_receipt(&port, &channel, 1);
+        assert!(storage.has_packet_receipt(&port, &channel, 1));
+    }
+
+    #[test]
+    fn test_in_memory_storage_relay_tasks() {
+        let mut storage = InMemoryIbcStorage::new();
+
+        let packet = Packet {
+            sequence: 1,
+            source_port: PortId::new("transfer"),
+            source_channel: ChannelId::new("channel-0"),
+            destination_port: PortId::new("transfer"),
+            destination_channel: ChannelId::new("channel-1"),
+            data: b"test".to_vec(),
+            timeout_height: Height::new(0, 1000),
+            timeout_timestamp: 0,
+        };
+
+        let task = RelayTask::new(
+            packet,
+            RelayTaskType::RecvPacket,
+            ChainId::new("jam"),
+            ChainId::new("osmosis-1"),
+            vec![],
+            Height::default(),
+            500,
+            100,
+            10,
+        );
+
+        let task_id = task.id;
+        storage.set_relay_task(task);
+
+        assert!(storage.get_relay_task(&task_id).is_some());
+        assert_eq!(storage.get_pending_tasks().len(), 1);
+    }
+
+    #[test]
+    fn test_in_memory_storage_user_balances() {
+        let mut storage = InMemoryIbcStorage::new();
+
+        let user = [1u8; 32];
+        let token_id = [2u8; 32];
+
+        storage.credit_user(user, &token_id, 1000).unwrap();
+        let balance = storage.get_user_balance(&user).unwrap();
+        assert_eq!(balance.get_balance(&token_id), 1000);
+
+        storage.debit_user(&user, &token_id, 300).unwrap();
+        let balance = storage.get_user_balance(&user).unwrap();
+        assert_eq!(balance.get_balance(&token_id), 700);
+    }
+
+    // =========================================================================
+    // integration test: full transfer flow with storage
+    // =========================================================================
+
+    #[test]
+    fn test_full_transfer_flow_with_storage() {
+        let mut storage = InMemoryIbcStorage::new();
+
+        // setup: create client, connection, channel
+        let client_id = storage.alloc_client_id();
+        let client_state = ClientState {
+            chain_id: ChainId::new("osmosis-1"),
+            trust_level: (1, 3),
+            trusting_period: 1209600,
+            unbonding_period: 1814400,
+            max_clock_drift: 10,
+            latest_height: Height::new(0, 100),
+            frozen_height: None,
+        };
+        storage.set_client_state(&client_id, client_state);
+
+        let conn_id = storage.alloc_connection_id();
+        let mut conn = ConnectionEnd::new_init(
+            client_id.clone(),
+            ClientId::new("07-tendermint-0"),
+            b"ibc".to_vec(),
+            vec![default_ibc_version()],
+            0,
+        );
+        conn.open().unwrap();
+        storage.set_connection(&conn_id, conn);
+
+        let port = PortId::new("transfer");
+        let channel_id = storage.alloc_channel_id();
+        let mut channel = ChannelEnd::new_init(
+            Order::Unordered,
+            port.clone(),
+            vec![conn_id],
+            b"ics20-1".to_vec(),
+        );
+        channel.counterparty.channel_id = Some(ChannelId::new("channel-0"));
+        channel.open().unwrap();
+        storage.set_channel(&port, &channel_id, channel);
+
+        // 1. receive atom from cosmos
+        let incoming_data = FungibleTokenPacketData {
+            denom: Denom::native("uatom"),
+            amount: 1000,
+            sender: b"cosmos1sender".to_vec(),
+            receiver: [1u8; 32].to_vec(), // jam address
+            memo: None,
+        };
+
+        let recv_packet = Packet {
+            sequence: 1,
+            source_port: port.clone(),
+            source_channel: ChannelId::new("channel-0"),
+            destination_port: port.clone(),
+            destination_channel: channel_id.clone(),
+            data: incoming_data.encode(),
+            timeout_height: Height::new(0, 1000),
+            timeout_timestamp: 0,
+        };
+
+        // process recv
+        let transfer_state = storage.get_transfer_state_mut();
+        let (token_id, amount) = on_recv_packet(transfer_state, &recv_packet, 100).unwrap();
+
+        // credit user
+        let receiver: Hash32 = [1u8; 32];
+        storage.credit_user(receiver, &token_id, amount).unwrap();
+
+        // set receipt
+        storage.set_packet_receipt(&port, &channel_id, 1);
+
+        // verify state
+        assert!(storage.has_packet_receipt(&port, &channel_id, 1));
+        assert_eq!(storage.get_user_balance(&receiver).unwrap().get_balance(&token_id), 1000);
+        assert_eq!(storage.get_transfer_state().registry.get_supply(&token_id), 1000);
+
+        // 2. send some back
+        let wrapped_denom = storage.get_transfer_state().registry.get_token(&token_id).unwrap().denom.clone();
+
+        // debit user
+        storage.debit_user(&receiver, &token_id, 400).unwrap();
+
+        // process send
+        let transfer_state = storage.get_transfer_state_mut();
+        let _send_denom = on_send_packet(transfer_state, &wrapped_denom, 400, &port, &channel_id).unwrap();
+
+        // create outgoing packet
+        let seq = storage.alloc_send_sequence(&port, &channel_id);
+        let send_packet = Packet {
+            sequence: seq,
+            source_port: port.clone(),
+            source_channel: channel_id.clone(),
+            destination_port: port.clone(),
+            destination_channel: ChannelId::new("channel-0"),
+            data: FungibleTokenPacketData {
+                denom: Denom::native("uatom"), // unwrapped
+                amount: 400,
+                sender: receiver.to_vec(),
+                receiver: b"cosmos1receiver".to_vec(),
+                memo: None,
+            }.encode(),
+            timeout_height: Height::new(0, 2000),
+            timeout_timestamp: 0,
+        };
+
+        // set commitment
+        storage.set_packet_commitment(&port, &channel_id, seq, send_packet.commitment());
+
+        // verify final state
+        assert_eq!(storage.get_user_balance(&receiver).unwrap().get_balance(&token_id), 600);
+        assert_eq!(storage.get_transfer_state().registry.get_supply(&token_id), 600);
+        assert!(storage.get_packet_commitment(&port, &channel_id, seq).is_some());
     }
 }
