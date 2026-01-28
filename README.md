@@ -223,6 +223,12 @@ ibc work item types:
 | `ClaimRelayTask` | executor claims pending relay task |
 | `ConfirmExecution` | executor proves tx was included on dest chain |
 
+ics-20 token custody:
+- **escrow model**: native tokens locked when sent, unlocked on return
+- **mint/burn**: incoming tokens wrapped with trace path prefix
+- **denomination tracing**: full path tracking (transfer/channel-0/uatom)
+- **user balances**: per-address token accounting for wrapped assets
+
 executor incentives:
 - tasks have bounties (base + proof size + urgency bonus)
 - first-come-first-served claiming
@@ -257,6 +263,22 @@ executor workflow:
 4. claims pending relay tasks with bounties above minimum
 5. executes relays on destination chains
 6. confirms execution with inclusion proofs
+
+### multi-chain compatibility
+
+ibc module supports multiple proof formats for different chains:
+
+| chain type | merkle tree | proof format | notes |
+|------------|-------------|--------------|-------|
+| cosmos sdk | iavl | ics-23 | cosmoshub, osmosis |
+| tendermint | tendermint | ics-23 | standard cosmos chains |
+| penumbra | jmt | ics-23 | jellyfish merkle tree |
+
+penumbra-specific support:
+- **jmt proofs**: jellyfish merkle tree leaf/inner specs with sparse placeholders
+- **timestamp quantization**: 1-minute intervals for shielded transfer privacy
+- **chain detection**: automatic spec selection from chain id
+- **address validation**: penumbra bech32m receiver format
 
 ## geodns regions
 
