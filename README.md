@@ -280,6 +280,25 @@ penumbra-specific support:
 - **chain detection**: automatic spec selection from chain id
 - **address validation**: penumbra bech32m receiver format
 
+### ibc entities
+
+jam services and polkadot parachains can become ibc entities with their own ports:
+
+| entity type | port format | example |
+|-------------|-------------|---------|
+| jam service | `jam-service-{index}` | `jam-service-5` |
+| polkadot parachain | `polkadot-para-{id}` | `polkadot-para-2000` |
+| asset hub token | `polkadot-asset-{id}` | `polkadot-asset-1984` |
+
+entity registration allows:
+- each service to have independent ibc channels
+- parachains to bridge directly via xcm→ibc
+- asset hub tokens to have native ibc representation
+- custom entity types for specialized protocols
+
+jam client (099-jam) can be deployed on cosmos chains via 08-wasm
+for trustless verification, or use threshold oracle model for simpler setup
+
 ## geodns regions
 
 records can target specific geographic regions:
