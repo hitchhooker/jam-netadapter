@@ -11,6 +11,7 @@ pub mod tendermint;
 pub mod relay;
 pub mod transfer;
 pub mod storage;
+pub mod jam_client;
 
 #[cfg(test)]
 mod tests;
