@@ -4,6 +4,8 @@
 
 pub mod types;
 pub mod client;
+pub mod connection;
+pub mod channel;
 pub mod proof;
 pub mod tendermint;
 pub mod relay;

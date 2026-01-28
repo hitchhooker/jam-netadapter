@@ -38,7 +38,7 @@ impl Height {
 }
 
 /// client identifier
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientId(pub Vec<u8>);
 
 impl ClientId {
@@ -52,7 +52,7 @@ impl ClientId {
 }
 
 /// connection identifier
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionId(pub Vec<u8>);
 
 impl ConnectionId {
