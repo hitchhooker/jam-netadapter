@@ -8,6 +8,9 @@ pub mod proof;
 pub mod tendermint;
 pub mod relay;
 
+#[cfg(test)]
+mod tests;
+
 use ed25519_dalek::{Signature, VerifyingKey, Verifier};
 
 pub use types::*;
