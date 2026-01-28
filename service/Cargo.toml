@@ -12,6 +12,7 @@ serde_bytes = "0.11"
 bincode = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
+blake2 = "0.10"
 thiserror = { workspace = true }
 
 [dev-dependencies]
