@@ -7,7 +7,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(never_type)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
@@ -30,6 +29,7 @@ mod poseidon;
 mod privacy_storage;
 mod privacy_refine;
 mod privacy_accumulate;
+mod ibc;
 
 use types::*;
 

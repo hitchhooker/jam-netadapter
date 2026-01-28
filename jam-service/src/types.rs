@@ -31,6 +31,8 @@ pub enum WorkItemType {
     SlaOp = 3,
     /// private/shielded transaction (zeratul-style)
     PrivateOp = 4,
+    /// ibc relay operation (cosmos bridge)
+    IbcOp = 5,
 }
 
 impl WorkItemType {
@@ -41,6 +43,7 @@ impl WorkItemType {
             2 => Some(Self::NamespaceOp),
             3 => Some(Self::SlaOp),
             4 => Some(Self::PrivateOp),
+            5 => Some(Self::IbcOp),
             _ => None,
         }
     }

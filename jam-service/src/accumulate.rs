@@ -89,6 +89,9 @@ fn handle_operand(operand: &Operand, timeslot: u32) {
         WorkItemType::PrivateOp => {
             crate::privacy_accumulate::accumulate_private(payload, &refined, timeslot);
         }
+        WorkItemType::IbcOp => {
+            accumulate_ibc(payload, &refined, timeslot);
+        }
     }
 }
 
@@ -431,5 +434,178 @@ fn decode_namespace_op(data: &[u8]) -> Option<(NamespaceOp, usize)> {
             ))
         }
         _ => None,
+    }
+}
+
+// ============================================================================
+// ibc accumulate
+// ============================================================================
+
+/// accumulate ibc work item
+/// applies state changes after successful refine validation
+fn accumulate_ibc(payload: &[u8], refined: &RefineOutput, _timeslot: u32) {
+    use crate::ibc::work_item::IbcWorkItem;
+    use crate::ibc::storage as ibc_storage;
+    use crate::ibc::client::{ClientStateInfo, ConsensusStateInfo, ClientType, ClientStatus};
+    use crate::ibc::types::{ClientId, CommitmentRoot, Height, Timestamp};
+    use crate::ibc::tendermint::{TendermintClientState, TendermintConsensusState};
+
+    if !refined.valid {
+        return;
+    }
+
+    // decode ibc work item (skip first byte which is WorkItemType)
+    let work_item = match IbcWorkItem::decode(&payload[1..]) {
+        Some(item) => item,
+        None => return,
+    };
+
+    match work_item {
+        IbcWorkItem::CreateClient { client_type, client_state, consensus_state } => {
+            // allocate new client id
+            let counter = ibc_storage::increment_client_counter();
+            let client_id_str = match client_type {
+                ClientType::Tendermint => alloc::format!("07-tendermint-{}", counter - 1),
+                ClientType::Grandpa => alloc::format!("10-grandpa-{}", counter - 1),
+            };
+            let client_id = ClientId::new(client_id_str.as_bytes());
+
+            // decode type-specific state
+            let (chain_id, latest_height, root, timestamp) = match client_type {
+                ClientType::Tendermint => {
+                    if let Some(cs) = TendermintClientState::decode(&client_state) {
+                        if let Some(cons) = TendermintConsensusState::decode(&consensus_state) {
+                            (cs.chain_id, cs.latest_height, cons.root, cons.timestamp)
+                        } else {
+                            return;
+                        }
+                    } else {
+                        return;
+                    }
+                }
+                _ => return, // other client types not yet supported
+            };
+
+            // store client state
+            let state_info = ClientStateInfo {
+                client_type,
+                chain_id,
+                latest_height,
+                frozen_height: None,
+                status: ClientStatus::Active,
+                state_data: client_state,
+            };
+            ibc_storage::set_client_state(&client_id, &state_info);
+
+            // store consensus state
+            let consensus_info = ConsensusStateInfo {
+                timestamp: Timestamp::from_nanoseconds(timestamp),
+                root: CommitmentRoot::new(root.0),
+                state_data: consensus_state,
+            };
+            ibc_storage::set_consensus_state(&client_id, &latest_height, &consensus_info);
+        }
+
+        IbcWorkItem::UpdateClient { client_id, header } => {
+            // get existing client state
+            let mut client_state = match ibc_storage::get_client_state(&client_id) {
+                Some(s) => s,
+                None => return,
+            };
+
+            // decode and validate header based on client type
+            match client_state.client_type {
+                ClientType::Tendermint => {
+                    if let Some(tm_header) = crate::ibc::tendermint::TendermintHeader::decode(&header) {
+                        let new_height = tm_header.height();
+
+                        // update latest height
+                        if new_height > client_state.latest_height {
+                            client_state.latest_height = new_height;
+                            client_state.state_data = header.clone();
+                            ibc_storage::set_client_state(&client_id, &client_state);
+
+                            // store new consensus state
+                            let consensus_info = ConsensusStateInfo {
+                                timestamp: Timestamp::from_nanoseconds(tm_header.signed_header.header.time),
+                                root: CommitmentRoot::new(tm_header.signed_header.header.app_hash),
+                                state_data: alloc::vec![],
+                            };
+                            ibc_storage::set_consensus_state(&client_id, &new_height, &consensus_info);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        IbcWorkItem::RecvPacket { packet, proof_commitment: _, proof_height: _ } => {
+            use crate::ibc::channel::Order;
+            use crate::ibc::packet::Acknowledgement;
+
+            // get channel
+            let channel = match ibc_storage::get_channel(&packet.destination_port, &packet.destination_channel) {
+                Some(c) => c,
+                None => return,
+            };
+
+            // check channel is open
+            if !channel.is_open() {
+                return;
+            }
+
+            // handle based on ordering
+            match channel.ordering {
+                Order::Unordered => {
+                    // check not already received
+                    if ibc_storage::get_packet_receipt(&packet.destination_port, &packet.destination_channel, packet.sequence) {
+                        return; // already received
+                    }
+                    // store receipt
+                    ibc_storage::set_packet_receipt(&packet.destination_port, &packet.destination_channel, packet.sequence);
+                }
+                Order::Ordered => {
+                    // check sequence matches expected
+                    let expected = ibc_storage::get_next_sequence_recv(&packet.destination_port, &packet.destination_channel);
+                    if packet.sequence != expected {
+                        return;
+                    }
+                    // increment next sequence
+                    ibc_storage::set_next_sequence_recv(&packet.destination_port, &packet.destination_channel, expected.increment());
+                }
+            }
+
+            // write acknowledgement (success for now)
+            let ack = Acknowledgement::success();
+            let ack_commitment = ack.commitment();
+            ibc_storage::set_packet_ack(&packet.destination_port, &packet.destination_channel, packet.sequence, &ack_commitment);
+        }
+
+        IbcWorkItem::AcknowledgePacket { packet, acknowledgement: _, proof_acked: _, proof_height: _ } => {
+            // delete packet commitment
+            ibc_storage::delete_packet_commitment(&packet.source_port, &packet.source_channel, packet.sequence);
+
+            // update next sequence ack for ordered channels
+            let channel = match ibc_storage::get_channel(&packet.source_port, &packet.source_channel) {
+                Some(c) => c,
+                None => return,
+            };
+
+            if channel.ordering == crate::ibc::channel::Order::Ordered {
+                let expected = ibc_storage::get_next_sequence_ack(&packet.source_port, &packet.source_channel);
+                if packet.sequence == expected {
+                    ibc_storage::set_next_sequence_ack(&packet.source_port, &packet.source_channel, expected.increment());
+                }
+            }
+        }
+
+        IbcWorkItem::TimeoutPacket { packet, next_sequence_recv: _, proof_unreceived: _, proof_height: _ } => {
+            // delete packet commitment
+            ibc_storage::delete_packet_commitment(&packet.source_port, &packet.source_channel, packet.sequence);
+        }
+
+        _ => {
+            // other work items not yet implemented
+        }
     }
 }

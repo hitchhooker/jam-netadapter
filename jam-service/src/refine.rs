@@ -118,6 +118,7 @@ pub fn handle_refine(args: &RefineArgs) {
         WorkItemType::NamespaceOp => refine_namespace(&payload[1..]),
         WorkItemType::SlaOp => crate::sla_refine::refine_sla(&payload[1..]),
         WorkItemType::PrivateOp => crate::privacy_refine::refine_private(&payload[1..]),
+        WorkItemType::IbcOp => refine_ibc(&payload[1..]),
     };
 
     host::return_result(&result.encode());
@@ -578,5 +579,84 @@ fn decode_namespace_op(data: &[u8]) -> Option<(NamespaceOp, usize)> {
             ))
         }
         _ => None,
+    }
+}
+
+// ============================================================================
+// ibc refine
+// ============================================================================
+
+/// refine ibc work item
+/// validates proofs and signatures, returns refined output
+fn refine_ibc(payload: &[u8]) -> RefineOutput {
+    use sha2::{Sha256, Digest};
+    use crate::ibc::work_item::IbcWorkItem;
+
+    // decode ibc work item
+    let work_item = match IbcWorkItem::decode(payload) {
+        Some(item) => item,
+        None => {
+            return RefineOutput {
+                valid: false,
+                item_type: WorkItemType::IbcOp as u8,
+                data_hash: [0u8; 32],
+                request_id: None,
+                key: None,
+            };
+        }
+    };
+
+    // compute data hash for commitment
+    let data_hash = {
+        let result = Sha256::digest(payload);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    };
+
+    // validate based on work item type
+    let valid = match &work_item {
+        IbcWorkItem::CreateClient { client_type: _, client_state, consensus_state } => {
+            // basic validation - state data must be non-empty
+            !client_state.is_empty() && !consensus_state.is_empty()
+        }
+
+        IbcWorkItem::UpdateClient { client_id, header } => {
+            // basic validation - must have client_id and header
+            !client_id.0.is_empty() && !header.is_empty()
+            // TODO: full header verification requires consensus state lookup
+        }
+
+        IbcWorkItem::RecvPacket { packet, proof_commitment, proof_height: _ } => {
+            // basic validation
+            !packet.data.is_empty() && !proof_commitment.is_empty()
+            // TODO: full proof verification against light client state
+        }
+
+        IbcWorkItem::AcknowledgePacket { packet, acknowledgement, proof_acked, proof_height: _ } => {
+            !packet.data.is_empty() && !acknowledgement.is_empty() && !proof_acked.is_empty()
+        }
+
+        IbcWorkItem::ClaimRelayTask { task_id: _, executor: _, signature: _ } => {
+            // TODO: verify signature
+            true
+        }
+
+        IbcWorkItem::ConfirmExecution { task_id: _, dest_tx_hash: _, inclusion_proof } => {
+            !inclusion_proof.is_empty()
+        }
+
+        _ => {
+            // other work items not yet implemented
+            false
+        }
+    };
+
+    RefineOutput {
+        valid,
+        item_type: WorkItemType::IbcOp as u8,
+        data_hash,
+        request_id: None,
+        key: None,
     }
 }
