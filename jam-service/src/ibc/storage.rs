@@ -347,3 +347,73 @@ pub fn increment_channel_counter() -> u64 {
     let _ = storage_write(&key, &counter.to_le_bytes());
     counter
 }
+
+// ============================================================================
+// relay task operations
+// ============================================================================
+
+use crate::ibc::relay::{RelayTask, TaskQueueMetrics};
+
+/// storage prefix for task queue metrics
+pub const PREFIX_TASK_METRICS: u8 = 0x3E;
+/// storage prefix for pending task index
+pub const PREFIX_PENDING_TASKS: u8 = 0x3F;
+
+fn relay_task_key(task_id: &Hash32) -> Vec<u8> {
+    let mut key = alloc::vec![PREFIX_RELAY_TASK];
+    key.extend_from_slice(task_id);
+    key
+}
+
+pub fn get_relay_task(task_id: &Hash32) -> Option<RelayTask> {
+    let key = relay_task_key(task_id);
+    let data = storage_read(&key)?;
+    RelayTask::decode(&data)
+}
+
+pub fn set_relay_task(task: &RelayTask) {
+    let key = relay_task_key(&task.id);
+    let mut data = Vec::new();
+    task.encode(&mut data);
+    let _ = storage_write(&key, &data);
+}
+
+pub fn delete_relay_task(task_id: &Hash32) {
+    let key = relay_task_key(task_id);
+    let _ = storage_write(&key, &[]);
+}
+
+/// add task to pending index
+pub fn add_pending_task(task_id: &Hash32) {
+    let mut key = alloc::vec![PREFIX_PENDING_TASKS];
+    key.extend_from_slice(task_id);
+    let _ = storage_write(&key, &[1u8]); // marker
+}
+
+/// remove task from pending index
+pub fn remove_pending_task(task_id: &Hash32) {
+    let mut key = alloc::vec![PREFIX_PENDING_TASKS];
+    key.extend_from_slice(task_id);
+    let _ = storage_write(&key, &[]);
+}
+
+/// check if task is in pending index
+pub fn is_pending_task(task_id: &Hash32) -> bool {
+    let mut key = alloc::vec![PREFIX_PENDING_TASKS];
+    key.extend_from_slice(task_id);
+    storage_read(&key).map(|d| !d.is_empty()).unwrap_or(false)
+}
+
+pub fn get_task_metrics() -> TaskQueueMetrics {
+    let key = alloc::vec![PREFIX_TASK_METRICS];
+    storage_read(&key)
+        .and_then(|d| TaskQueueMetrics::decode(&d))
+        .unwrap_or_default()
+}
+
+pub fn set_task_metrics(metrics: &TaskQueueMetrics) {
+    let key = alloc::vec![PREFIX_TASK_METRICS];
+    let mut data = Vec::new();
+    metrics.encode(&mut data);
+    let _ = storage_write(&key, &data);
+}

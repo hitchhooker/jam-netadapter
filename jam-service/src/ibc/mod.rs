@@ -13,6 +13,7 @@ pub mod tendermint;
 pub mod commitment;
 pub mod storage;
 pub mod work_item;
+pub mod relay;
 
 pub use types::*;
 pub use client::*;

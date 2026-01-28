@@ -640,26 +640,17 @@ fn compute_sign_bytes(signed_header: &SignedHeader, timestamp: u64) -> Vec<u8> {
     buf
 }
 
-/// verify ed25519 signature (placeholder - use ed25519-dalek in real impl)
+/// verify ed25519 signature using ed25519-dalek
 fn verify_ed25519(pub_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
-    // TODO: implement with ed25519-dalek
-    // for now, always return true (UNSAFE - for development only)
-    #[cfg(feature = "ed25519")]
-    {
-        use ed25519_dalek::{Signature, VerifyingKey, Verifier};
-        let Ok(verifying_key) = VerifyingKey::from_bytes(pub_key) else {
-            return false;
-        };
-        let Ok(sig) = Signature::from_bytes(signature) else {
-            return false;
-        };
-        verifying_key.verify(message, &sig).is_ok()
-    }
+    use ed25519_dalek::{Signature, VerifyingKey, Verifier};
 
-    #[cfg(not(feature = "ed25519"))]
-    {
-        // WARNING: stub for development - always accepts
-        let _ = (pub_key, message, signature);
-        true
-    }
+    let verifying_key = match VerifyingKey::from_bytes(pub_key) {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+
+    // ed25519-dalek 2.x: from_bytes returns Signature directly
+    let sig = Signature::from_bytes(signature);
+
+    verifying_key.verify(message, &sig).is_ok()
 }

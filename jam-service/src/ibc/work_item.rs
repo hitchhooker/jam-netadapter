@@ -34,6 +34,7 @@ pub enum IbcWorkItemType {
     ChannelCloseConfirm = 25,
 
     // packet relay
+    SendPacket = 29,
     RecvPacket = 30,
     AcknowledgePacket = 31,
     TimeoutPacket = 32,
@@ -42,6 +43,7 @@ pub enum IbcWorkItemType {
     // relay task management
     ClaimRelayTask = 40,
     ConfirmExecution = 41,
+    ExpireTasks = 42,
 }
 
 impl IbcWorkItemType {
@@ -61,12 +63,14 @@ impl IbcWorkItemType {
             23 => Some(Self::ChannelOpenConfirm),
             24 => Some(Self::ChannelCloseInit),
             25 => Some(Self::ChannelCloseConfirm),
+            29 => Some(Self::SendPacket),
             30 => Some(Self::RecvPacket),
             31 => Some(Self::AcknowledgePacket),
             32 => Some(Self::TimeoutPacket),
             33 => Some(Self::TimeoutOnClose),
             40 => Some(Self::ClaimRelayTask),
             41 => Some(Self::ConfirmExecution),
+            42 => Some(Self::ExpireTasks),
             _ => None,
         }
     }
@@ -200,6 +204,21 @@ pub enum IbcWorkItem {
     // packet relay
     // ========================================================================
 
+    /// send packet from JAM to destination chain
+    /// creates relay task for executors
+    SendPacket {
+        /// source port on JAM
+        source_port: PortId,
+        /// source channel on JAM
+        source_channel: ChannelId,
+        /// packet data
+        data: Vec<u8>,
+        /// timeout height on destination
+        timeout_height: Height,
+        /// timeout timestamp (nanos)
+        timeout_timestamp: u64,
+    },
+
     /// receive packet from source chain
     RecvPacket {
         packet: Packet,
@@ -250,6 +269,12 @@ pub enum IbcWorkItem {
         dest_tx_hash: Hash32,
         /// inclusion proof
         inclusion_proof: Vec<u8>,
+    },
+
+    /// expire stale tasks and re-queue
+    ExpireTasks {
+        /// list of task IDs to expire
+        task_ids: Vec<Hash32>,
     },
 }
 
