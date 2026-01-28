@@ -95,7 +95,7 @@ impl Executor {
     }
 
     /// run main executor loop
-    pub async fn run(&self, poll_interval: Duration) -> anyhow::Result<()> {
+    pub async fn run(&mut self, poll_interval: Duration) -> anyhow::Result<()> {
         info!("executor starting main loop");
 
         let mut last_cosmos_height = self.cosmos_client.get_height().await?;
@@ -111,7 +111,7 @@ impl Executor {
     }
 
     /// single executor tick
-    async fn tick(&self, last_cosmos_height: &mut u64) -> anyhow::Result<()> {
+    async fn tick(&mut self, last_cosmos_height: &mut u64) -> anyhow::Result<()> {
         // check for new packets from cosmos
         let current_height = self.cosmos_client.get_height().await?;
 
@@ -160,7 +160,7 @@ impl Executor {
     }
 
     /// handle packet event from cosmos
-    async fn handle_packet_event(&self, mut event: PacketEvent) -> anyhow::Result<()> {
+    async fn handle_packet_event(&mut self, mut event: PacketEvent) -> anyhow::Result<()> {
         info!(
             "detected packet: {}:{} seq {}",
             event.packet.source_port,
@@ -201,7 +201,7 @@ impl Executor {
     }
 
     /// process pending relay task
-    async fn process_task(&self, task: RelayTask) -> anyhow::Result<()> {
+    async fn process_task(&mut self, task: RelayTask) -> anyhow::Result<()> {
         info!(
             "processing task {:?}, bounty: {}",
             hex::encode(&task.id[..8]),
@@ -232,7 +232,7 @@ impl Executor {
     }
 
     /// claim a relay task
-    async fn claim_task(&self, task: &RelayTask) -> anyhow::Result<bool> {
+    async fn claim_task(&mut self, task: &RelayTask) -> anyhow::Result<bool> {
         let executor_pubkey = self.keypair.verifying_key().to_bytes();
 
         // sign the claim message: task_id || executor_pubkey
@@ -267,7 +267,7 @@ impl Executor {
     }
 
     /// execute recv_packet relay
-    async fn execute_recv_packet(&self, task: &RelayTask) -> anyhow::Result<()> {
+    async fn execute_recv_packet(&mut self, task: &RelayTask) -> anyhow::Result<()> {
         info!("executing recv_packet for task {:?}", hex::encode(&task.id[..8]));
 
         // the task should already have the packet and proof from jam
@@ -312,7 +312,7 @@ impl Executor {
     }
 
     /// execute ack_packet relay
-    async fn execute_ack_packet(&self, task: &RelayTask) -> anyhow::Result<()> {
+    async fn execute_ack_packet(&mut self, task: &RelayTask) -> anyhow::Result<()> {
         info!("executing ack_packet for task {:?}", hex::encode(&task.id[..8]));
 
         // similar to recv_packet but submits MsgAcknowledgement
@@ -347,7 +347,7 @@ impl Executor {
     }
 
     /// execute timeout_packet relay
-    async fn execute_timeout_packet(&self, task: &RelayTask) -> anyhow::Result<()> {
+    async fn execute_timeout_packet(&mut self, task: &RelayTask) -> anyhow::Result<()> {
         info!("executing timeout_packet for task {:?}", hex::encode(&task.id[..8]));
 
         let tx_bytes = self.build_timeout_packet_tx(task)?;

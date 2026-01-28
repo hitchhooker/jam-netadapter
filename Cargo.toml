@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["common", "worker", "service", "dns-server", "resolver", "executor"]
+exclude = ["cosmwasm/ics10-jam-cw"]
 
 [workspace.package]
 version = "0.1.0"

@@ -10,7 +10,6 @@
 //! - ed25519 for grandpa votes, bandersnatch for block seals
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
 
 use super::types::*;
 

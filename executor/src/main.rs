@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let cosmos_client = cosmos::CosmosClient::new(&args.cosmos_rpc).await?;
 
     // create executor
-    let executor = relay::Executor::new(
+    let mut executor = relay::Executor::new(
         jam_client,
         cosmos_client,
         keypair,

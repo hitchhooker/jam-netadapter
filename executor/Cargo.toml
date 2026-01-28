@@ -21,6 +21,10 @@ tendermint-rpc = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
+blake2 = "0.10"
+
+# encoding
+base64 = "0.22"
 
 # serialization
 serde = { workspace = true }
