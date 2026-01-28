@@ -7,6 +7,7 @@ pub mod client;
 pub mod proof;
 pub mod tendermint;
 pub mod relay;
+pub mod transfer;
 
 #[cfg(test)]
 mod tests;

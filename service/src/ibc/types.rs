@@ -62,7 +62,7 @@ impl ConnectionId {
 }
 
 /// channel identifier
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelId(pub Vec<u8>);
 
 impl ChannelId {
@@ -72,7 +72,7 @@ impl ChannelId {
 }
 
 /// port identifier
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortId(pub Vec<u8>);
 
 impl PortId {

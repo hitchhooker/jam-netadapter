@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use super::super::transfer::*;
 
     #[test]
     fn test_height_comparison() {
@@ -250,5 +251,270 @@ mod tests {
 
         let root = proof.calculate_root().unwrap();
         assert_ne!(root, [0u8; 32]);
+    }
+
+    // =========================================================================
+    // ics-20 transfer tests
+    // =========================================================================
+
+    #[test]
+    fn test_denom_native() {
+        let denom = Denom::native("uatom");
+        assert!(denom.is_native());
+        assert_eq!(denom.full_path(), b"uatom");
+    }
+
+    #[test]
+    fn test_denom_with_trace() {
+        let denom = Denom::with_trace("uatom", vec![
+            TracePath {
+                port_id: PortId::new("transfer"),
+                channel_id: ChannelId::new("channel-0"),
+            },
+        ]);
+
+        assert!(!denom.is_native());
+        assert_eq!(denom.full_path(), b"transfer/channel-0/uatom");
+    }
+
+    #[test]
+    fn test_denom_from_path() {
+        // native
+        let denom = Denom::from_path(b"uatom").unwrap();
+        assert!(denom.is_native());
+
+        // with trace
+        let denom = Denom::from_path(b"transfer/channel-0/uatom").unwrap();
+        assert!(!denom.is_native());
+        assert_eq!(denom.trace_path.len(), 1);
+        assert_eq!(denom.base_denom, b"uatom");
+
+        // multi-hop trace
+        let denom = Denom::from_path(b"transfer/channel-1/transfer/channel-0/uatom").unwrap();
+        assert_eq!(denom.trace_path.len(), 2);
+    }
+
+    #[test]
+    fn test_denom_is_source() {
+        let port = PortId::new("transfer");
+        let channel = ChannelId::new("channel-0");
+
+        // native token is NOT source (being sent out)
+        let native = Denom::native("uatom");
+        assert!(!native.is_source(&port, &channel));
+
+        // token with matching trace prefix IS source (returning home)
+        let traced = Denom::with_trace("uatom", vec![
+            TracePath {
+                port_id: port.clone(),
+                channel_id: channel.clone(),
+            },
+        ]);
+        assert!(traced.is_source(&port, &channel));
+
+        // token with different trace is not source
+        let other = Denom::with_trace("uatom", vec![
+            TracePath {
+                port_id: PortId::new("transfer"),
+                channel_id: ChannelId::new("channel-99"),
+            },
+        ]);
+        assert!(!other.is_source(&port, &channel));
+    }
+
+    #[test]
+    fn test_denom_add_remove_prefix() {
+        let mut denom = Denom::native("uatom");
+
+        // add prefix
+        denom.add_prefix(&PortId::new("transfer"), &ChannelId::new("channel-0"));
+        assert!(!denom.is_native());
+        assert_eq!(denom.trace_path.len(), 1);
+
+        // remove prefix
+        let removed = denom.remove_prefix();
+        assert!(removed.is_some());
+        assert!(denom.is_native());
+    }
+
+    #[test]
+    fn test_escrow_account() {
+        let port = PortId::new("transfer");
+        let channel = ChannelId::new("channel-0");
+        let mut escrow = EscrowAccount::new(&port, &channel);
+
+        let denom = Denom::native("uatom");
+
+        // lock
+        escrow.lock(&denom, 100).unwrap();
+        assert_eq!(escrow.get_balance(&denom), 100);
+
+        // lock more
+        escrow.lock(&denom, 50).unwrap();
+        assert_eq!(escrow.get_balance(&denom), 150);
+
+        // unlock
+        escrow.unlock(&denom, 75).unwrap();
+        assert_eq!(escrow.get_balance(&denom), 75);
+
+        // can't unlock more than locked
+        assert!(escrow.unlock(&denom, 100).is_err());
+    }
+
+    #[test]
+    fn test_token_registry() {
+        let mut registry = TokenRegistry::default();
+
+        let denom = Denom::with_trace("uatom", vec![
+            TracePath {
+                port_id: PortId::new("transfer"),
+                channel_id: ChannelId::new("channel-0"),
+            },
+        ]);
+
+        // register
+        let token_id = registry.register(
+            &denom,
+            &PortId::new("transfer"),
+            &ChannelId::new("channel-0"),
+            100,
+        );
+
+        assert!(registry.get_token(&token_id).is_some());
+        assert_eq!(registry.get_supply(&token_id), 0);
+
+        // mint
+        registry.mint(&token_id, 1000).unwrap();
+        assert_eq!(registry.get_supply(&token_id), 1000);
+
+        // burn
+        registry.burn(&token_id, 400).unwrap();
+        assert_eq!(registry.get_supply(&token_id), 600);
+
+        // can't burn more than supply
+        assert!(registry.burn(&token_id, 700).is_err());
+    }
+
+    #[test]
+    fn test_user_balance() {
+        let mut balance = UserBalance::new([1u8; 32]);
+        let token_id = [2u8; 32];
+
+        // credit
+        balance.credit(&token_id, 500).unwrap();
+        assert_eq!(balance.get_balance(&token_id), 500);
+
+        // debit
+        balance.debit(&token_id, 200).unwrap();
+        assert_eq!(balance.get_balance(&token_id), 300);
+
+        // can't debit more than balance
+        assert!(balance.debit(&token_id, 400).is_err());
+    }
+
+    #[test]
+    fn test_fungible_token_packet_encode_decode() {
+        let data = FungibleTokenPacketData {
+            denom: Denom::native("uatom"),
+            amount: 1_000_000,
+            sender: b"cosmos1abc...".to_vec(),
+            receiver: b"jam1xyz...".to_vec(),
+            memo: Some(b"test memo".to_vec()),
+        };
+
+        let encoded = data.encode();
+        let decoded = FungibleTokenPacketData::decode(&encoded).unwrap();
+
+        assert_eq!(decoded.denom, data.denom);
+        assert_eq!(decoded.amount, data.amount);
+        assert_eq!(decoded.sender, data.sender);
+        assert_eq!(decoded.receiver, data.receiver);
+        assert_eq!(decoded.memo, data.memo);
+    }
+
+    #[test]
+    fn test_on_recv_packet_mint_wrapped() {
+        let mut state = TransferModuleState::default();
+
+        // create packet data for incoming transfer
+        let data = FungibleTokenPacketData {
+            denom: Denom::native("uatom"),  // native on cosmos
+            amount: 1000,
+            sender: b"cosmos1...".to_vec(),
+            receiver: b"jam1...".to_vec(),
+            memo: None,
+        };
+
+        let packet = Packet {
+            sequence: 1,
+            source_port: PortId::new("transfer"),
+            source_channel: ChannelId::new("channel-0"),
+            destination_port: PortId::new("transfer"),
+            destination_channel: ChannelId::new("channel-1"),
+            data: data.encode(),
+            timeout_height: Height::new(0, 1000),
+            timeout_timestamp: 0,
+        };
+
+        // receive packet - should mint wrapped tokens
+        let (token_id, amount) = on_recv_packet(&mut state, &packet, 100).unwrap();
+
+        assert_eq!(amount, 1000);
+        assert_eq!(state.registry.get_supply(&token_id), 1000);
+    }
+
+    #[test]
+    fn test_on_send_packet_escrow() {
+        let mut state = TransferModuleState::default();
+
+        let denom = Denom::native("ujam");
+        let port = PortId::new("transfer");
+        let channel = ChannelId::new("channel-0");
+
+        // send native token - should lock in escrow
+        let result_denom = on_send_packet(&mut state, &denom, 500, &port, &channel).unwrap();
+
+        assert_eq!(result_denom, denom);
+
+        let escrow = state.get_escrow(&port, &channel).unwrap();
+        assert_eq!(escrow.get_balance(&denom), 500);
+    }
+
+    #[test]
+    fn test_transfer_roundtrip() {
+        let mut state = TransferModuleState::default();
+        let port = PortId::new("transfer");
+        let channel = ChannelId::new("channel-0");
+
+        // 1. receive atom from cosmos (mint wrapped)
+        let incoming_data = FungibleTokenPacketData {
+            denom: Denom::native("uatom"),
+            amount: 1000,
+            sender: b"cosmos1...".to_vec(),
+            receiver: b"jam1...".to_vec(),
+            memo: None,
+        };
+
+        let recv_packet = Packet {
+            sequence: 1,
+            source_port: port.clone(),
+            source_channel: channel.clone(),
+            destination_port: port.clone(),
+            destination_channel: ChannelId::new("channel-1"),
+            data: incoming_data.encode(),
+            timeout_height: Height::new(0, 1000),
+            timeout_timestamp: 0,
+        };
+
+        let (token_id, _) = on_recv_packet(&mut state, &recv_packet, 100).unwrap();
+        assert_eq!(state.registry.get_supply(&token_id), 1000);
+
+        // 2. send wrapped atom back to cosmos (burn)
+        let wrapped_denom = state.registry.get_token(&token_id).unwrap().denom.clone();
+
+        on_send_packet(&mut state, &wrapped_denom, 400, &port, &ChannelId::new("channel-1")).unwrap();
+
+        // supply reduced by burn
+        assert_eq!(state.registry.get_supply(&token_id), 600);
     }
 }
