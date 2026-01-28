@@ -686,3 +686,263 @@ fn encode_varint(mut n: u64) -> Vec<u8> {
     buf.push(n as u8);
     buf
 }
+
+// ============================================================================
+// spec-aware proof verification
+// ============================================================================
+
+/// chain type for proof verification
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainType {
+    /// cosmos sdk chains using iavl trees
+    Cosmos,
+    /// tendermint-based chains
+    Tendermint,
+    /// penumbra using jellyfish merkle trees
+    Penumbra,
+}
+
+impl ChainType {
+    /// get proof spec for this chain type
+    pub fn proof_spec(&self) -> ProofSpec {
+        match self {
+            ChainType::Cosmos => ProofSpec::iavl(),
+            ChainType::Tendermint => ProofSpec::tendermint(),
+            ChainType::Penumbra => ProofSpec::jmt(),
+        }
+    }
+
+    /// detect chain type from chain id
+    pub fn from_chain_id(chain_id: &[u8]) -> Self {
+        let id = core::str::from_utf8(chain_id).unwrap_or("");
+
+        if id.starts_with("penumbra") {
+            ChainType::Penumbra
+        } else if id.contains("cosmoshub") || id.contains("osmosis") {
+            ChainType::Cosmos
+        } else {
+            // default to cosmos/tendermint
+            ChainType::Tendermint
+        }
+    }
+}
+
+/// verify existence proof with spec
+pub fn verify_existence_with_spec(
+    proof: &ExistenceProof,
+    spec: &ProofSpec,
+    root: &Hash32,
+    key: &[u8],
+    value: &[u8],
+) -> Result<(), IbcError> {
+    // verify key matches
+    if proof.key != key {
+        return Err(IbcError::InvalidProof);
+    }
+
+    // verify value matches
+    if proof.value != value {
+        return Err(IbcError::InvalidProof);
+    }
+
+    // check depth constraints
+    let depth = proof.path.len() as u32;
+    if spec.max_depth > 0 && depth > spec.max_depth {
+        return Err(IbcError::InvalidProof);
+    }
+    if depth < spec.min_depth {
+        return Err(IbcError::InvalidProof);
+    }
+
+    // calculate root with spec's leaf op
+    let leaf_hash = spec.leaf_spec.apply(&proof.key, &proof.value)?;
+
+    // apply inner ops and verify against spec
+    let mut current_hash = leaf_hash;
+    for inner in &proof.path {
+        // verify inner op constraints from spec
+        if inner.prefix.len() < spec.inner_spec.min_prefix_length as usize {
+            return Err(IbcError::InvalidProof);
+        }
+        if spec.inner_spec.max_prefix_length > 0
+            && inner.prefix.len() > spec.inner_spec.max_prefix_length as usize
+        {
+            return Err(IbcError::InvalidProof);
+        }
+
+        current_hash = inner.apply(&current_hash)?;
+    }
+
+    // verify calculated root matches expected
+    if &current_hash != root {
+        return Err(IbcError::InvalidProof);
+    }
+
+    Ok(())
+}
+
+/// verify non-existence proof with spec
+pub fn verify_non_existence_with_spec(
+    proof: &NonExistenceProof,
+    spec: &ProofSpec,
+    root: &Hash32,
+    key: &[u8],
+) -> Result<(), IbcError> {
+    // verify target key matches
+    if proof.key != key {
+        return Err(IbcError::InvalidProof);
+    }
+
+    // at least one neighbor must exist
+    if proof.left.is_none() && proof.right.is_none() {
+        return Err(IbcError::InvalidProof);
+    }
+
+    // for jmt, prehash key before comparison
+    let compare_key = if spec.prehash_key_before_comparison {
+        Sha256::digest(key).to_vec()
+    } else {
+        key.to_vec()
+    };
+
+    // verify left neighbor if present
+    if let Some(left) = &proof.left {
+        let left_compare = if spec.prehash_key_before_comparison {
+            Sha256::digest(&left.key).to_vec()
+        } else {
+            left.key.clone()
+        };
+
+        // left key must be < target
+        if left_compare >= compare_key {
+            return Err(IbcError::InvalidProof);
+        }
+
+        // verify left proof
+        let left_root = calculate_root_with_spec(left, &spec.leaf_spec)?;
+        if &left_root != root {
+            return Err(IbcError::InvalidProof);
+        }
+    }
+
+    // verify right neighbor if present
+    if let Some(right) = &proof.right {
+        let right_compare = if spec.prehash_key_before_comparison {
+            Sha256::digest(&right.key).to_vec()
+        } else {
+            right.key.clone()
+        };
+
+        // right key must be > target
+        if right_compare <= compare_key {
+            return Err(IbcError::InvalidProof);
+        }
+
+        // verify right proof
+        let right_root = calculate_root_with_spec(right, &spec.leaf_spec)?;
+        if &right_root != root {
+            return Err(IbcError::InvalidProof);
+        }
+    }
+
+    Ok(())
+}
+
+/// calculate root hash using specific leaf spec
+fn calculate_root_with_spec(proof: &ExistenceProof, leaf_spec: &LeafOp) -> Result<Hash32, IbcError> {
+    let mut current = leaf_spec.apply(&proof.key, &proof.value)?;
+
+    for inner in &proof.path {
+        current = inner.apply(&current)?;
+    }
+
+    Ok(current)
+}
+
+/// verify membership proof with chain-specific spec
+pub fn verify_membership_with_chain(
+    proof: &MerkleProof,
+    root: &CommitmentRoot,
+    path: &[Vec<u8>],
+    value: &[u8],
+    chain_type: ChainType,
+) -> Result<(), IbcError> {
+    let spec = chain_type.proof_spec();
+
+    if proof.proofs.is_empty() {
+        return Err(IbcError::InvalidProof);
+    }
+
+    let mut current_root = *root;
+
+    for (i, p) in proof.proofs.iter().enumerate() {
+        match &p.data {
+            ProofData::Exist(exist_proof) => {
+                // verify key matches path component
+                if i < path.len() && exist_proof.key != path[i] {
+                    return Err(IbcError::InvalidProof);
+                }
+
+                // for leaf (last proof), verify value
+                if i == proof.proofs.len() - 1 {
+                    if exist_proof.value != value {
+                        return Err(IbcError::InvalidProof);
+                    }
+                }
+
+                // calculate root using spec's leaf op
+                let leaf_hash = spec.leaf_spec.apply(&exist_proof.key, &exist_proof.value)?;
+                let mut calculated = leaf_hash;
+
+                for inner in &exist_proof.path {
+                    calculated = inner.apply(&calculated)?;
+                }
+
+                if calculated != current_root {
+                    return Err(IbcError::InvalidProof);
+                }
+
+                // for intermediate proofs, the value is the next root
+                if i < proof.proofs.len() - 1 {
+                    if exist_proof.value.len() != 32 {
+                        return Err(IbcError::InvalidProof);
+                    }
+                    current_root.copy_from_slice(&exist_proof.value);
+                }
+            }
+            ProofData::NonExist(_) => {
+                return Err(IbcError::InvalidProof);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// verify non-membership proof with chain-specific spec
+pub fn verify_non_membership_with_chain(
+    proof: &MerkleProof,
+    root: &CommitmentRoot,
+    path: &[Vec<u8>],
+    chain_type: ChainType,
+) -> Result<(), IbcError> {
+    let spec = chain_type.proof_spec();
+
+    if proof.proofs.is_empty() {
+        return Err(IbcError::InvalidProof);
+    }
+
+    for p in &proof.proofs {
+        if let ProofData::NonExist(non_exist) = &p.data {
+            let key = if !path.is_empty() {
+                &path[path.len() - 1]
+            } else {
+                &non_exist.key
+            };
+
+            return verify_non_existence_with_spec(non_exist, &spec, root, key);
+        }
+    }
+
+    Err(IbcError::InvalidProof)
+}

@@ -863,4 +863,131 @@ mod tests {
         assert_eq!(storage.get_transfer_state().registry.get_supply(&token_id), 600);
         assert!(storage.get_packet_commitment(&port, &channel_id, seq).is_some());
     }
+
+    // ========================================================================
+    // penumbra jmt proof tests
+    // ========================================================================
+
+    #[test]
+    fn test_chain_type_detection() {
+        use super::super::proof::ChainType;
+
+        // penumbra chains
+        assert_eq!(ChainType::from_chain_id(b"penumbra-1"), ChainType::Penumbra);
+        assert_eq!(ChainType::from_chain_id(b"penumbra-testnet-deimos-8"), ChainType::Penumbra);
+
+        // cosmos chains
+        assert_eq!(ChainType::from_chain_id(b"cosmoshub-4"), ChainType::Cosmos);
+        assert_eq!(ChainType::from_chain_id(b"osmosis-1"), ChainType::Cosmos);
+
+        // default to tendermint
+        assert_eq!(ChainType::from_chain_id(b"other-chain-1"), ChainType::Tendermint);
+    }
+
+    #[test]
+    fn test_proof_spec_iavl() {
+        use super::super::proof::ProofSpec;
+
+        let spec = ProofSpec::iavl();
+
+        // iavl leaf spec
+        assert_eq!(spec.leaf_spec.hash, 0);
+        assert_eq!(spec.leaf_spec.prehash_key, 0);
+        assert_eq!(spec.leaf_spec.prehash_value, 1);
+        assert_eq!(spec.leaf_spec.length, 1);
+        assert_eq!(spec.leaf_spec.prefix, vec![0]);
+
+        // iavl inner spec
+        assert_eq!(spec.inner_spec.child_order, vec![0, 1]);
+        assert_eq!(spec.inner_spec.child_size, 33);
+        assert_eq!(spec.inner_spec.min_prefix_length, 4);
+        assert_eq!(spec.inner_spec.max_prefix_length, 12);
+        assert!(spec.inner_spec.empty_child.is_empty());
+    }
+
+    #[test]
+    fn test_proof_spec_jmt() {
+        use super::super::proof::ProofSpec;
+
+        let spec = ProofSpec::jmt();
+
+        // jmt leaf spec
+        assert_eq!(spec.leaf_spec.hash, 0);
+        assert_eq!(spec.leaf_spec.prehash_key, 1);  // jmt prehashes key
+        assert_eq!(spec.leaf_spec.prehash_value, 1);
+        assert_eq!(spec.leaf_spec.length, 0);  // no length prefix
+        assert_eq!(spec.leaf_spec.prefix, b"JMT::LeafNode".to_vec());
+
+        // jmt inner spec
+        assert_eq!(spec.inner_spec.child_order, vec![0, 1]);
+        assert_eq!(spec.inner_spec.child_size, 32);
+        assert_eq!(spec.inner_spec.min_prefix_length, 1);
+        assert_eq!(spec.inner_spec.max_prefix_length, 1);
+        // jmt sparse merkle placeholder
+        assert_eq!(spec.inner_spec.empty_child.len(), 32);
+        assert!(spec.inner_spec.empty_child.iter().all(|&b| b == 0x01));
+
+        // jmt constraints
+        assert_eq!(spec.max_depth, 64);
+        assert!(spec.prehash_key_before_comparison);
+    }
+
+    #[test]
+    fn test_leaf_op_jmt() {
+        use super::super::proof::LeafOp;
+        use sha2::{Sha256, Digest};
+
+        let leaf = LeafOp::jmt();
+
+        let key = b"test_key";
+        let value = b"test_value";
+
+        // jmt should prehash both key and value, then hash with prefix
+        let key_hash = Sha256::digest(key);
+        let value_hash = Sha256::digest(value);
+
+        let mut expected = Sha256::new();
+        expected.update(b"JMT::LeafNode");
+        expected.update(&key_hash);
+        expected.update(&value_hash);
+        let expected_hash: [u8; 32] = expected.finalize().into();
+
+        let actual_hash = leaf.apply(key, value).unwrap();
+        assert_eq!(actual_hash, expected_hash);
+    }
+
+    #[test]
+    fn test_verify_existence_with_spec_depth_check() {
+        use super::super::proof::{ExistenceProof, ProofSpec, InnerOp, verify_existence_with_spec};
+
+        // create a proof with 65 inner ops (exceeds jmt max_depth of 64)
+        let proof = ExistenceProof {
+            key: b"key".to_vec(),
+            value: b"value".to_vec(),
+            leaf: super::super::proof::LeafOp::jmt(),
+            path: (0..65).map(|_| InnerOp {
+                hash: 0,
+                prefix: vec![0],
+                suffix: vec![],
+            }).collect(),
+        };
+
+        let spec = ProofSpec::jmt();
+        let root = [0u8; 32];
+
+        // should fail due to depth constraint
+        let result = verify_existence_with_spec(&proof, &spec, &root, b"key", b"value");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_chain_type_proof_spec() {
+        use super::super::proof::ChainType;
+
+        let cosmos_spec = ChainType::Cosmos.proof_spec();
+        assert_eq!(cosmos_spec.leaf_spec.prefix, vec![0]);
+
+        let penumbra_spec = ChainType::Penumbra.proof_spec();
+        assert_eq!(penumbra_spec.leaf_spec.prefix, b"JMT::LeafNode".to_vec());
+    }
 }
